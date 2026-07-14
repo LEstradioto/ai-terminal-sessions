@@ -1,0 +1,20 @@
+import CoreGraphics
+import Foundation
+
+let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+  exit(1)
+}
+
+for window in windows {
+  let owner = window[kCGWindowOwnerName as String] as? String ?? ""
+  guard owner == "Code" || owner == "Visual Studio Code" else { continue }
+  let number = window[kCGWindowNumber as String] as? Int ?? 0
+  let pid = window[kCGWindowOwnerPID as String] as? Int ?? 0
+  let name = window[kCGWindowName as String] as? String ?? ""
+  let layer = window[kCGWindowLayer as String] as? Int ?? -1
+  let bounds = window[kCGWindowBounds as String] as? [String: Any] ?? [:]
+  let width = bounds["Width"] as? Int ?? 0
+  let height = bounds["Height"] as? Int ?? 0
+  print("\(number)\t\(pid)\t\(layer)\t\(width)x\(height)\t\(name)")
+}

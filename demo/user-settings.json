@@ -1,0 +1,10 @@
+{
+  "security.workspace.trust.enabled": false,
+  "telemetry.telemetryLevel": "off",
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
+  "workbench.startupEditor": "none",
+  "terminal.integrated.enablePersistentSessions": false,
+  "window.restoreWindows": "none",
+  "window.commandCenter": false,
+  "update.mode": "none"
+}

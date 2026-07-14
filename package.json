@@ -1,0 +1,298 @@
+{
+  "name": "ai-terminal-sessions",
+  "displayName": "AI Terminal Sessions",
+  "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a floating monitor.",
+  "version": "0.4.4",
+  "publisher": "LEstradioto",
+  "author": "Luan Estradioto",
+  "license": "MIT",
+  "preview": true,
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LEstradioto/ai-terminal-sessions.git"
+  },
+  "homepage": "https://github.com/LEstradioto/ai-terminal-sessions#readme",
+  "bugs": {
+    "url": "https://github.com/LEstradioto/ai-terminal-sessions/issues"
+  },
+  "galleryBanner": {
+    "color": "#10131a",
+    "theme": "dark"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "vscode": "^1.127.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "tmux",
+    "terminal",
+    "claude code",
+    "codex",
+    "ai agents",
+    "persistent terminal",
+    "terminal monitor",
+    "draft recovery"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onTerminalProfile:aiTerminalSessions.profile",
+    "onWebviewPanel:aiTerminalSessions.monitor"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The extension launches configured executables and reads local agent transcripts."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "A local filesystem, tmux, and a pseudo-terminal are required."
+    }
+  },
+  "main": "./extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run check",
+    "check": "node --check extension.js && node --test test/*.test.js",
+    "test": "node --test test/*.test.js",
+    "test:coverage": "node --test --experimental-test-coverage test/*.test.js"
+  },
+  "contributes": {
+    "terminal": {
+      "profiles": [
+        {
+          "id": "aiTerminalSessions.profile",
+          "title": "AI Sessions",
+          "icon": "terminal-tmux"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "aiTerminalSessions.new",
+        "title": "New Persistent Terminal",
+        "category": "AI Sessions",
+        "icon": "$(add)"
+      },
+      {
+        "command": "aiTerminalSessions.attachExisting",
+        "title": "Recover Orphaned Private Session",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.rename",
+        "title": "Rename Terminal",
+        "category": "AI Sessions",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "aiTerminalSessions.renameWithAI",
+        "title": "Rename with AI",
+        "category": "AI Sessions",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "aiTerminalSessions.diagnoseRenameAI",
+        "title": "Diagnose AI Rename",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.restoreDraft",
+        "title": "Recover Last Draft",
+        "category": "AI Sessions",
+        "icon": "$(history)"
+      },
+      {
+        "command": "aiTerminalSessions.toggleMonitorPin",
+        "title": "Pin or Unpin from Session Monitor",
+        "category": "AI Sessions",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "aiTerminalSessions.toggleMonitor",
+        "title": "Show or Hide Session Monitor",
+        "category": "AI Sessions",
+        "icon": "$(multiple-windows)"
+      },
+      {
+        "command": "aiTerminalSessions.remove",
+        "title": "Remove Session",
+        "category": "AI Sessions",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "aiTerminalSessions.restoreNow",
+        "title": "Restore Tabs Now",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.showSessionHistory",
+        "title": "Session History",
+        "category": "AI Sessions",
+        "icon": "$(history)"
+      },
+      {
+        "command": "aiTerminalSessions.clearRecoveryData",
+        "title": "Clear Drafts and Session History",
+        "category": "AI Sessions",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "aiTerminalSessions.stopAll",
+        "title": "Stop All Managed Sessions",
+        "category": "AI Sessions",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "aiTerminalSessions.makeDefault",
+        "title": "Use as Default Terminal Profile",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.showLog",
+        "title": "Show Log",
+        "category": "AI Sessions"
+      }
+    ],
+    "menus": {
+      "terminal/context": [
+        {
+          "command": "aiTerminalSessions.renameWithAI",
+          "group": "1_rename@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.rename",
+          "group": "1_rename@2",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.restoreDraft",
+          "group": "2_recovery@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.toggleMonitorPin",
+          "group": "3_monitor@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.remove",
+          "group": "9_kill@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "aiTerminalSessions.toggleMonitorPin",
+        "key": "ctrl+alt+down",
+        "mac": "cmd+alt+down",
+        "when": "terminalFocus && aiTerminalSessions.managedTerminalActive"
+      },
+      {
+        "command": "aiTerminalSessions.toggleMonitor",
+        "key": "ctrl+alt+up",
+        "mac": "cmd+alt+up",
+        "when": "aiTerminalSessions.monitorHasPins"
+      }
+    ],
+    "configuration": {
+      "title": "AI Terminal Sessions",
+      "properties": {
+        "aiTerminalSessions.restoreAgents": {
+          "type": "boolean",
+          "default": true,
+          "description": "After a cold boot, resume Claude Code and Codex by their saved session ID."
+        },
+        "aiTerminalSessions.defaultLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "panel"
+          ],
+          "default": "editor",
+          "description": "Where new persistent terminals are created."
+        },
+        "aiTerminalSessions.renameProvider": {
+          "type": "string",
+          "enum": [
+            "sameHarness",
+            "vscode",
+            "local"
+          ],
+          "enumDescriptions": [
+            "Use Codex for Codex tabs and Claude for Claude tabs; conversation context never crosses providers.",
+            "Use a model exposed by the VS Code Language Model API.",
+            "Do not call an AI model; generate a deterministic local title."
+          ],
+          "default": "sameHarness",
+          "description": "Provider used only when Rename with AI is explicitly invoked."
+        },
+        "aiTerminalSessions.draftRecovery": {
+          "type": "boolean",
+          "default": true,
+          "description": "Locally save the latest non-empty agent composer text for recovery after deletion, reload, or crash."
+        },
+        "aiTerminalSessions.monitorAlwaysOnTop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the floating Session Monitor above other windows when supported."
+        },
+        "aiTerminalSessions.notifyWhenReady": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a system notification when an agent finishes outside the active tab."
+        },
+        "aiTerminalSessions.closeBehavior": {
+          "type": "string",
+          "enum": [
+            "kill",
+            "forget",
+            "keep"
+          ],
+          "enumDescriptions": [
+            "Terminate the extension-owned tmux session and remove its saved tab.",
+            "Remove the saved tab but leave the tmux session running.",
+            "Keep the saved session and restore its tab later."
+          ],
+          "default": "kill",
+          "description": "Behavior after explicitly closing a tab with the X button or shortcut. A clean shell exit always removes the saved tab."
+        },
+        "aiTerminalSessions.executables": {
+          "type": "object",
+          "default": {
+            "tmux": "tmux",
+            "codex": "codex",
+            "claude": "claude"
+          },
+          "scope": "machine",
+          "additionalProperties": false,
+          "properties": {
+            "tmux": {
+              "type": "string",
+              "description": "tmux executable name or absolute path."
+            },
+            "codex": {
+              "type": "string",
+              "description": "Codex CLI executable name or absolute path."
+            },
+            "claude": {
+              "type": "string",
+              "description": "Claude CLI executable name or absolute path."
+            }
+          },
+          "description": "Executable names or absolute paths. The defaults resolve through PATH."
+        }
+      }
+    }
+  }
+}

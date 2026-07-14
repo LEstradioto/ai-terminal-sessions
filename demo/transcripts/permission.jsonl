@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-13T13:02:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Solve the authentication migration without dropping active sessions"}}
+{"timestamp":"2026-07-13T13:02:03.000Z","type":"response_item","payload":{"type":"function_call","name":"run_migration"}}

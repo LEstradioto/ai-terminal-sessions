@@ -1,0 +1,17 @@
+name: Feature request
+description: Propose a focused improvement to the terminal workflow.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Workflow problem
+      description: What are you trying to do, and where does the current workflow break down?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and any safety tradeoffs.

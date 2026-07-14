@@ -1,0 +1,10 @@
+{
+  "aiTerminalSessions.closeBehavior": "keep",
+  "aiTerminalSessions.renameProvider": "local",
+  "aiTerminalSessions.monitorAlwaysOnTop": true,
+  "terminal.integrated.defaultLocation": "editor",
+  "terminal.integrated.fontSize": 12,
+  "workbench.startupEditor": "none",
+  "workbench.colorTheme": "Dark Modern",
+  "window.commandCenter": false
+}

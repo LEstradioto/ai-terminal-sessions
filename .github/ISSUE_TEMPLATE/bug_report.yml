@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible session, restore, monitor, or draft problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove prompts, session IDs, emails, and private paths from logs before sharing them.
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: VS Code, extension, macOS, and tmux versions.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Minimal steps and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted log
+      description: Optional output from AI Terminal Sessions.
