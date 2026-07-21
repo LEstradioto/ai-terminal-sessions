@@ -24,3 +24,13 @@ test('keeps the public configuration focused on workflow decisions', () => {
     claude: 'claude',
   });
 });
+
+test('binds keyboard paging only inside managed terminals', () => {
+  const bindings = manifest.contributes.keybindings;
+  const pageUp = bindings.find((binding) => binding.command === 'aiTerminalSessions.scrollPageUp');
+  const pageDown = bindings.find((binding) => binding.command === 'aiTerminalSessions.scrollPageDown');
+  assert.equal(pageUp.key, 'shift+pageup');
+  assert.equal(pageDown.key, 'shift+pagedown');
+  assert.equal(pageUp.when, 'terminalFocus && aiTerminalSessions.managedTerminalActive');
+  assert.equal(pageDown.when, 'terminalFocus && aiTerminalSessions.managedTerminalActive');
+});

@@ -85,9 +85,11 @@ Run **AI Sessions: Use as Default Terminal Profile** only if you want the termin
 |---|---:|---:|
 | Pin active tab | `Cmd+Option+Down` | `Hyper+Down` |
 | Toggle monitor | `Cmd+Option+Up` | `Hyper+Up` |
+| Scroll tmux history | `Shift+Page Up/Down` | Same |
 | Move between tabs | Your VS Code binding | `Hyper+Left/Right` |
 
 "Hyper" is my macOS Hyper key mapped to `Cmd+Option`. The extension does not register it.
+Keyboard scrolling enters tmux copy mode. Press `q` or `Escape` to return to the live terminal.
 
 ## Close and restore
 

@@ -244,6 +244,8 @@ class SessionManager {
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.renameWithAI', () => this.renameActiveWithAI()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.diagnoseRenameAI', () => this.diagnoseRenameAI()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.restoreDraft', () => this.restoreDraft()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageUp', () => this.scrollActive('up')));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageDown', () => this.scrollActive('down')));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitorPin', () => this.toggleMonitorPin()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitor', () => this.toggleMonitor()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.remove', () => this.removeActive()));
@@ -1347,6 +1349,17 @@ class SessionManager {
     });
     const [recordId] = recordIdsForTabLabels([activeTab.label], terminals);
     return recordId && this.records.get(recordId);
+  }
+
+  async scrollActive(direction) {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    const target = `${record.tmuxSession}:`;
+    if (direction === 'up') {
+      await this.runTmux(['copy-mode', '-u', '-t', target]);
+      return;
+    }
+    await this.runTmux(['send-keys', '-X', '-t', target, 'page-down-and-cancel'], true);
   }
 
   async renameActive() {

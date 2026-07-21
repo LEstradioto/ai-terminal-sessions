@@ -2,6 +2,10 @@
 
 All notable changes to AI Terminal Sessions are documented here.
 
+## 0.4.5
+
+- Added keyboard paging for managed tmux terminals with `Shift+Page Up` and `Shift+Page Down`.
+
 ## 0.4.4
 
 - Prevented blank terminal editor tabs during startup and reload by restoring PTY editors sequentially after their tmux bridges attach, then replaying the visible pane snapshot.

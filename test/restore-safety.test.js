@@ -72,6 +72,16 @@ test('private tmux sessions handle mouse wheel scrolling', () => {
   assert.doesNotMatch(configure, /'mouse', 'off'/);
 });
 
+test('managed terminals expose keyboard paging through tmux copy mode', () => {
+  const start = source.indexOf('  async scrollActive(direction)');
+  const end = source.indexOf('\n  async renameActive()', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const scroll = source.slice(start, end);
+  assert.match(scroll, /'copy-mode', '-u', '-t', target/);
+  assert.match(scroll, /'send-keys', '-X', '-t', target, 'page-down-and-cancel'/);
+});
+
 test('restored terminals replay a pane snapshot after the live bridge attaches', () => {
   const ptyStart = source.indexOf('class ManagedTmuxPty');
   const ptyEnd = source.indexOf('\n\/\* tmux owns the processes', ptyStart);

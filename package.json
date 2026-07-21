@@ -2,7 +2,7 @@
   "name": "ai-terminal-sessions",
   "displayName": "AI Terminal Sessions",
   "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a floating monitor.",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "LEstradioto",
   "author": "Luan Estradioto",
   "license": "MIT",
@@ -111,6 +111,16 @@
         "icon": "$(history)"
       },
       {
+        "command": "aiTerminalSessions.scrollPageUp",
+        "title": "Scroll Terminal Page Up",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.scrollPageDown",
+        "title": "Scroll Terminal Page Down",
+        "category": "AI Sessions"
+      },
+      {
         "command": "aiTerminalSessions.toggleMonitorPin",
         "title": "Pin or Unpin from Session Monitor",
         "category": "AI Sessions",
@@ -192,6 +202,16 @@
       ]
     },
     "keybindings": [
+      {
+        "command": "aiTerminalSessions.scrollPageUp",
+        "key": "shift+pageup",
+        "when": "terminalFocus && aiTerminalSessions.managedTerminalActive"
+      },
+      {
+        "command": "aiTerminalSessions.scrollPageDown",
+        "key": "shift+pagedown",
+        "when": "terminalFocus && aiTerminalSessions.managedTerminalActive"
+      },
       {
         "command": "aiTerminalSessions.toggleMonitorPin",
         "key": "ctrl+alt+down",
