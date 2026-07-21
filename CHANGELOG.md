@@ -2,6 +2,13 @@
 
 All notable changes to AI Terminal Sessions are documented here.
 
+## 0.4.6
+
+- Added an individual closed-session archive with one-tab restore for Codex, Claude Code, and generic terminals.
+- Added an instant side preview of recent local conversation messages while navigating Session History.
+- Kept snapshot recovery as a separate advanced action with a modal bulk-restore warning.
+- Migrated recoverable sessions from existing snapshots into the individual history automatically.
+
 ## 0.4.5
 
 - Added keyboard paging for managed tmux terminals with `Shift+Page Up` and `Shift+Page Down`.

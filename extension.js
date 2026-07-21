@@ -12,6 +12,7 @@ const {
   readRecentUserMessages,
   stripStatusPrefix,
 } = require('./rename-context');
+const { extractConversationPreview } = require('./conversation-preview');
 const { extractDraft } = require('./draft-recovery');
 const { activityReference, isNewReadyEvent, terminalStatusIcon } = require('./session-status');
 const {
@@ -23,11 +24,21 @@ const {
   statusTone,
 } = require('./monitor-model');
 const { monitorHtml } = require('./monitor-view');
+const { historyPreviewHtml } = require('./history-preview');
 const {
   appendSessionSnapshot,
   historyPayload,
   normalizeSessionHistory,
 } = require('./session-history');
+const {
+  archiveKey,
+  archivePayload,
+  migrateSnapshotsToArchive,
+  normalizeArchivePayload,
+  normalizePreview,
+  sessionAgent,
+  upsertArchivedSession,
+} = require('./session-archive');
 const {
   applyVisualOrder,
   recordIdsForTabLabels,
@@ -190,6 +201,12 @@ class SessionManager {
       this.context.globalStorageUri.fsPath,
       `history-${this.workspaceHash}.json`,
     );
+    this.sessionArchive = [];
+    this.archivePersistQueue = Promise.resolve();
+    this.archiveStorePath = path.join(
+      this.context.globalStorageUri.fsPath,
+      `archive-${this.workspaceHash}.json`,
+    );
     this.monitorPanel = undefined;
     this.monitorTimer = undefined;
     this.monitorRefreshing = false;
@@ -305,8 +322,10 @@ class SessionManager {
   async start() {
     await this.loadState();
     await this.loadSessionHistory();
-    await this.checkpointSessionHistory('startup');
     await this.loadDrafts();
+    await this.loadSessionArchive();
+    await this.migrateSessionArchive();
+    await this.checkpointSessionHistory('startup');
     if (this.demoMode) {
       const { seedDemo } = require('./demo/demo-seed');
       await seedDemo(this);
@@ -481,6 +500,53 @@ class SessionManager {
     if (!result.changed) return false;
     await this.persistSessionHistory();
     this.output.appendLine(`[history] saved ${this.records.size} tab(s): ${reason}`);
+    return true;
+  }
+
+  async loadSessionArchive() {
+    let payload;
+    try {
+      payload = JSON.parse(await fs.promises.readFile(this.archiveStorePath, 'utf8'));
+    } catch (error) {
+      if (error && error.code !== 'ENOENT') this.log('archive-load', error);
+      return;
+    }
+    this.sessionArchive = normalizeArchivePayload(payload, this.workspaceKey);
+    this.output.appendLine(`[archive] loaded ${this.sessionArchive.length} session(s)`);
+  }
+
+  persistSessionArchive() {
+    this.archivePersistQueue = this.archivePersistQueue.catch(() => {}).then(async () => {
+      const directory = path.dirname(this.archiveStorePath);
+      const temporary = `${this.archiveStorePath}.${process.pid}.tmp`;
+      await fs.promises.mkdir(directory, { recursive: true });
+      await fs.promises.writeFile(
+        temporary,
+        JSON.stringify(archivePayload(this.workspaceKey, this.sessionArchive)),
+        { encoding: 'utf8', mode: 0o600 },
+      );
+      await fs.promises.rename(temporary, this.archiveStorePath);
+    });
+    return this.archivePersistQueue;
+  }
+
+  async migrateSessionArchive() {
+    const migrated = migrateSnapshotsToArchive(
+      this.sessionArchive,
+      this.sessionHistory,
+      this.records.values(),
+    );
+    this.sessionArchive = migrated.entries;
+    let changed = migrated.changed;
+    for (const entry of this.sessionArchive) {
+      const draft = this.drafts.get(entry.record.id);
+      if (!draft || entry.preview.some((message) => message.role === 'draft')) continue;
+      entry.preview = normalizePreview([...entry.preview, { role: 'draft', text: draft.text }]);
+      changed = true;
+    }
+    if (!changed) return false;
+    await this.persistSessionArchive();
+    this.output.appendLine(`[archive] migrated ${this.sessionArchive.length} recoverable session(s)`);
     return true;
   }
 
@@ -1099,7 +1165,207 @@ class SessionManager {
     return records.length;
   }
 
+  currentRecordForArchive(entry) {
+    return this.records.get(entry.record.id)
+      || [...this.records.values()].find((record) => (
+        record.tmuxSession === entry.record.tmuxSession || archiveKey(record) === entry.key
+      ));
+  }
+
+  async restoreArchivedSession(entry) {
+    const current = this.currentRecordForArchive(entry);
+    if (current) {
+      const terminal = this.terminals.get(current.id) || this.openRecord(current, false);
+      await this.workbench.switchToMainWindow();
+      terminal.show(false);
+      entry.lastRestoredAt = Date.now();
+      await this.persistSessionArchive();
+      vscode.window.setStatusBarMessage(`AI Sessions: ${entry.title} is already open`, 2500);
+      return;
+    }
+
+    const tabOrder = Math.max(-1, ...[...this.records.values()].map((record) => (
+      Number.isFinite(record.tabOrder) ? record.tabOrder : -1
+    ))) + 1;
+    const resumeAgent = sessionAgent(entry.record);
+    const windows = (entry.record.windows || []).map((window) => ({
+      ...window,
+      panes: (window.panes || []).map((pane) => ({
+        ...pane,
+        ...(pane.agent && resumeAgent
+          && pane.agent.type === resumeAgent.type
+          && pane.agent.sessionId === resumeAgent.sessionId
+          ? { agent: { ...pane.agent, active: true } }
+          : {}),
+      })),
+    }));
+    const record = normalizeSessionRecord({
+      ...entry.record,
+      windows,
+      ...(resumeAgent && {
+        activeAgent: { type: resumeAgent.type, sessionId: resumeAgent.sessionId },
+      }),
+      monitorPinned: false,
+      monitorPinnedAt: 0,
+      tabOrder,
+      lastFocusedAt: Date.now(),
+    }, this.workspaceKey);
+    if (!record) {
+      vscode.window.showErrorMessage('This history entry is no longer valid.');
+      return;
+    }
+
+    this.records.set(record.id, record);
+    await this.persist('archive-restore');
+    try {
+      await this.workbench.switchToMainWindow();
+      await this.ensureSession(record);
+      const terminal = this.openRecord(record, false);
+      terminal.show(false);
+      const pty = this.ptys.get(record.id);
+      const ready = pty && await waitFor(() => pty.bridgeReady(), 1800, 25);
+      if (ready) await pty.replayVisiblePane();
+      await this.scanAll();
+      entry.lastRestoredAt = Date.now();
+      await this.persistSessionArchive();
+      vscode.window.showInformationMessage(`Restored "${entry.title}" from session history.`);
+    } catch (error) {
+      this.log('archive-restore', error);
+      vscode.window.showErrorMessage(`Could not restore "${entry.title}". Its recovery data was kept.`);
+    }
+  }
+
+  historyQuickPickItems() {
+    const items = this.sessionArchive.map((entry) => {
+      const current = this.currentRecordForArchive(entry);
+      const preview = [...entry.preview].reverse().find((message) => message.text);
+      const time = new Date(entry.archivedAt).toLocaleString([], {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      });
+      const provider = entry.provider === 'terminal' ? 'Terminal' : providerLabel(entry.provider);
+      return {
+        label: `${current ? '$(circle-filled)' : '$(history)'} ${entry.title}`,
+        description: current ? `${provider} · open now` : `${provider} · closed ${time}`,
+        detail: preview ? preview.text.replace(/\s+/g, ' ').slice(0, 260) : 'No saved message preview',
+        entry,
+      };
+    });
+    if (this.sessionHistory.length) {
+      if (items.length) items.push({ kind: vscode.QuickPickItemKind.Separator, label: 'Recovery' });
+      items.push({
+        label: '$(layers) Restore from a snapshot...',
+        description: 'advanced · may restore multiple tabs',
+        detail: 'Use only when the individual session you need is missing above.',
+        action: 'snapshots',
+      });
+    }
+    return items;
+  }
+
+  async updateHistoryPreview(panel, item, revision) {
+    if (!panel || !item) return;
+    if (!item.entry) {
+      panel.title = 'Session History Preview';
+      panel.webview.html = historyPreviewHtml({
+        title: 'Snapshot recovery',
+        provider: 'advanced recovery',
+        preview: [],
+      });
+      return;
+    }
+
+    const entry = item.entry;
+    panel.title = `Preview · ${entry.title}`;
+    const hasConversation = entry.preview.some((message) => (
+      message.role === 'user' || message.role === 'assistant'
+    ));
+    panel.webview.html = historyPreviewHtml(entry, {
+      loading: entry.provider !== 'terminal' && !hasConversation,
+    });
+    if (entry.provider === 'terminal' || hasConversation) return;
+
+    try {
+      const preview = await this.conversationPreviewForRecord(entry.record);
+      if (preview.length) {
+        const savedDrafts = entry.preview.filter((message) => message.role === 'draft');
+        entry.preview = normalizePreview([
+          ...preview.filter((message) => message.role !== 'draft'),
+          ...savedDrafts,
+          ...preview.filter((message) => message.role === 'draft'),
+        ]);
+        await this.persistSessionArchive();
+      }
+    } catch (error) {
+      this.log('archive-preview-load', error);
+    }
+    if (revision.current !== item.previewRevision || !panel.visible) return;
+    panel.webview.html = historyPreviewHtml(entry);
+  }
+
   async showSessionHistory() {
+    if (!this.sessionArchive.length && !this.sessionHistory.length) {
+      vscode.window.showInformationMessage('There are no closed sessions or snapshots for this workspace yet.');
+      return;
+    }
+
+    try {
+      await this.workbench.switchToMainWindow();
+      await delay(60);
+    } catch (error) {
+      this.log('history-main-window', error);
+    }
+    const items = this.historyQuickPickItems();
+    let previewPanel;
+    try {
+      previewPanel = vscode.window.createWebviewPanel(
+        'aiTerminalSessions.historyPreview',
+        'Session History Preview',
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: false, retainContextWhenHidden: false },
+      );
+    } catch (error) {
+      this.log('history-preview-panel', error);
+    }
+
+    const picker = vscode.window.createQuickPick();
+    picker.title = 'Session history';
+    picker.placeholder = 'Choose one closed session to restore';
+    picker.matchOnDescription = true;
+    picker.matchOnDetail = true;
+    picker.items = items;
+    const revision = { current: 0 };
+    const picked = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+        picker.hide();
+      };
+      picker.onDidAccept(() => finish(picker.selectedItems[0] || picker.activeItems[0]));
+      picker.onDidHide(() => finish(undefined));
+      picker.onDidChangeActive(([item]) => {
+        revision.current += 1;
+        if (!item) return;
+        item.previewRevision = revision.current;
+        this.updateHistoryPreview(previewPanel, item, revision)
+          .catch((error) => this.log('history-preview', error));
+      });
+      picker.show();
+      const first = items.find((item) => item.kind !== vscode.QuickPickItemKind.Separator);
+      if (first) picker.activeItems = [first];
+    });
+    picker.dispose();
+    if (previewPanel) previewPanel.dispose();
+    if (!picked) return;
+    if (picked.action === 'snapshots') {
+      await this.showSnapshotHistory();
+      return;
+    }
+    await this.restoreArchivedSession(picked.entry);
+  }
+
+  async showSnapshotHistory() {
     if (!this.sessionHistory.length) {
       vscode.window.showInformationMessage('There are no session snapshots for this workspace yet.');
       return;
@@ -1109,9 +1375,12 @@ class SessionManager {
     const liveSessions = new Set(liveRaw.split('\n').map((line) => line.trim()).filter(Boolean));
     const currentIds = new Set(this.records.keys());
     const currentTmux = new Set([...this.records.values()].map((record) => record.tmuxSession));
+    const currentArchiveKeys = new Set([...this.records.values()].map(archiveKey));
     const items = [...this.sessionHistory].reverse().map((snapshot) => {
       const missing = snapshot.records.filter((record) => (
-        !currentIds.has(record.id) && !currentTmux.has(record.tmuxSession)
+        !currentIds.has(record.id)
+        && !currentTmux.has(record.tmuxSession)
+        && !currentArchiveKeys.has(archiveKey(record))
       ));
       const alive = snapshot.records.filter((record) => liveSessions.has(record.tmuxSession)).length;
       const titles = snapshot.records.map((record) => (
@@ -1129,8 +1398,8 @@ class SessionManager {
       };
     });
     const picked = await vscode.window.showQuickPick(items, {
-      title: 'Session history',
-      placeHolder: 'Choose a snapshot to restore only its missing tabs',
+      title: 'Snapshot recovery',
+      placeHolder: 'Advanced recovery: choose a snapshot',
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -1141,15 +1410,19 @@ class SessionManager {
     }
 
     const choice = await vscode.window.showWarningMessage(
-      `Restore ${picked.missing.length} missing tab(s)? Current tabs will be kept.`,
-      'Restore missing tabs',
+      `Snapshot recovery will add ${picked.missing.length} missing tab(s) at once. Current tabs will be kept. Use individual session history when you only need one conversation.`,
+      { modal: true },
+      `Restore ${picked.missing.length} tabs`,
     );
-    if (choice !== 'Restore missing tabs') return;
+    if (choice !== `Restore ${picked.missing.length} tabs`) return;
 
     this.captureTabOrder();
     await this.checkpointSessionHistory('before-history-restore', true);
     const currentByTmux = new Map(
       [...this.records.values()].map((record) => [record.tmuxSession, record]),
+    );
+    const currentByArchiveKey = new Map(
+      [...this.records.values()].map((record) => [archiveKey(record), record]),
     );
     const snapshotIds = new Set();
     let lastSnapshotOrder = Math.max(
@@ -1159,7 +1432,9 @@ class SessionManager {
         .map((record) => record.tabOrder),
     );
     for (const raw of sortRecordsForRestore(picked.snapshot.records)) {
-      const current = this.records.get(raw.id) || currentByTmux.get(raw.tmuxSession);
+      const current = this.records.get(raw.id)
+        || currentByTmux.get(raw.tmuxSession)
+        || currentByArchiveKey.get(archiveKey(raw));
       if (!current) continue;
       current.tabOrder = Number.isFinite(raw.tabOrder) ? raw.tabOrder : lastSnapshotOrder + 1;
       lastSnapshotOrder = Math.max(lastSnapshotOrder, current.tabOrder);
@@ -1190,18 +1465,20 @@ class SessionManager {
 
   async clearRecoveryData() {
     const choice = await vscode.window.showWarningMessage(
-      'Delete saved composer drafts and session history for this workspace?',
+      'Delete saved composer drafts, closed sessions, and snapshots for this workspace?',
       { modal: true },
       'Delete recovery data',
     );
     if (choice !== 'Delete recovery data') return;
     this.drafts.clear();
     this.sessionHistory = [];
+    this.sessionArchive = [];
     await Promise.all([
       fs.promises.unlink(this.draftStorePath).catch(ignoreMissingFile),
       fs.promises.unlink(this.historyStorePath).catch(ignoreMissingFile),
+      fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
     ]);
-    vscode.window.showInformationMessage('Local drafts and session history were deleted.');
+    vscode.window.showInformationMessage('Local drafts, closed sessions, and snapshots were deleted.');
   }
 
   async stopAllManagedSessions() {
@@ -1240,9 +1517,11 @@ class SessionManager {
     await Promise.all([this.persist('stop-all'), this.persistDrafts(), this.updateMonitorContext()]);
     if (!this.records.size) {
       this.sessionHistory = [];
+      this.sessionArchive = [];
       await Promise.all([
         fs.promises.unlink(this.historyStorePath).catch(ignoreMissingFile),
         fs.promises.unlink(this.draftStorePath).catch(ignoreMissingFile),
+        fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
       ]);
     }
     if (this.monitorPanel && !this.pinnedRecords().length) this.monitorPanel.dispose();
@@ -1456,16 +1735,18 @@ class SessionManager {
       || agents[0];
   }
 
-  async renameContext(record) {
-    const agent = this.renameAgent(record);
-    let transcript = agent && agent.transcript;
-    if (!transcript && agent && agent.type === 'codex' && UUID_RE.test(agent.sessionId || '')) {
+  async transcriptForAgent(record, agent) {
+    if (!agent) return undefined;
+    if (agent.transcript && fs.existsSync(agent.transcript)) return agent.transcript;
+    let transcript;
+    if (agent.type === 'codex' && UUID_RE.test(agent.sessionId || '')) {
       transcript = this.codexTranscriptCache.get(agent.sessionId)
         || await findFileEndingWith(path.join(codexHome(), 'sessions'), `${agent.sessionId}.jsonl`);
-    }
-    if (!transcript && agent && agent.type === 'claude' && UUID_RE.test(agent.sessionId || '')) {
+      if (transcript) this.codexTranscriptCache.set(agent.sessionId, transcript);
+    } else if (agent.type === 'claude' && UUID_RE.test(agent.sessionId || '')) {
       const pane = (record.windows || []).flatMap((window) => window.panes || [])
-        .find((item) => item.agent === agent);
+        .find((item) => item.agent && item.agent.type === agent.type
+          && item.agent.sessionId === agent.sessionId);
       if (pane && pane.cwd) {
         const candidate = path.join(
           os.homedir(), '.claude', 'projects', encodeClaudeProject(pane.cwd), `${agent.sessionId}.jsonl`,
@@ -1473,6 +1754,45 @@ class SessionManager {
         if (fs.existsSync(candidate)) transcript = candidate;
       }
     }
+    if (transcript) agent.transcript = transcript;
+    return transcript;
+  }
+
+  async conversationPreviewForRecord(record) {
+    const agent = this.renameAgent(record) || sessionAgent(record);
+    const transcript = await this.transcriptForAgent(record, agent);
+    let preview = [];
+    if (agent && transcript) {
+      const snapshot = await readJsonlTail(transcript);
+      preview = extractConversationPreview(agent.type, snapshot.entries);
+    }
+    const draft = this.drafts.get(record.id);
+    if (draft && draft.text) preview.push({ role: 'draft', text: draft.text });
+    return normalizePreview(preview);
+  }
+
+  async archiveSession(record, closeAction) {
+    let preview = [];
+    try {
+      preview = await this.conversationPreviewForRecord(record);
+    } catch (error) {
+      this.log('archive-preview', error);
+    }
+    const result = upsertArchivedSession(this.sessionArchive, record, {
+      archivedAt: Date.now(),
+      closeAction,
+      preview,
+    });
+    this.sessionArchive = result.entries;
+    if (!result.changed) return undefined;
+    await this.persistSessionArchive();
+    this.output.appendLine(`[archive] saved ${result.entry.title}: ${closeAction}`);
+    return result.entry;
+  }
+
+  async renameContext(record) {
+    const agent = this.renameAgent(record);
+    const transcript = await this.transcriptForAgent(record, agent);
 
     let messages = [];
     let bytesRead = 0;
@@ -1482,7 +1802,6 @@ class SessionManager {
         const result = await readRecentUserMessages(agent.type, transcript, 2);
         messages = result.messages;
         bytesRead = result.bytesRead;
-        agent.transcript = transcript;
       } catch (readError) {
         error = messageOf(readError);
         this.log('rename-context', readError);
@@ -1640,6 +1959,16 @@ class SessionManager {
     }
     this.captureTabOrder();
     await this.checkpointSessionHistory('before-remove', true);
+    try {
+      await this.captureDraft(record);
+    } catch (error) {
+      this.log('archive-draft', error);
+    }
+    try {
+      await this.archiveSession(record, action);
+    } catch (error) {
+      this.log('archive-save', error);
+    }
     if (action === 'kill') {
       try {
         await this.killTmuxSession(record.tmuxSession);
@@ -2226,7 +2555,7 @@ class SessionManager {
       this.captureDraft(record).catch((error) => this.log('draft-shutdown', error))
     )));
     for (const pty of this.ptys.values()) pty.dispose();
-    await Promise.all([this.persist(), this.persistDrafts()]);
+    await Promise.all([this.persist(), this.persistDrafts(), this.archivePersistQueue]);
   }
 }
 

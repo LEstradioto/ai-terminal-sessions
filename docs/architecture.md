@@ -17,6 +17,8 @@ Pure modules own draft parsing, transcript selection, status transitions, orderi
 
 Durable state writes are serialized through `SessionStateStore`. A per-workspace file lease prevents two extension hosts from writing or terminating the same sessions at once. Destructive close first confirms tmux termination and only then removes recovery state.
 
+Closed sessions use a separate workspace-scoped archive. Agent session IDs deduplicate repeat closes, previews are bounded and sanitized, and restoring an entry adds only its tab. The rolling snapshot history remains independent and is reserved for explicit bulk recovery.
+
 ## Restore contract
 
 - If tmux is alive, a new disposable PTY client attaches to it.

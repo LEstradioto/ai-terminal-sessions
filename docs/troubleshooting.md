@@ -35,7 +35,7 @@ Try these in order:
 2. **AI Sessions: Session History**;
 3. **AI Sessions: Recover Orphaned Private Session**.
 
-The last command finds one-pane sessions on the extension's private tmux server that still belong to the current workspace.
+Session History restores one closed tab at a time. Its final advanced item opens bulk snapshot recovery and warns before adding multiple tabs. The last command finds one-pane sessions on the extension's private tmux server that still belong to the current workspace.
 
 ## Inspecting the private server
 

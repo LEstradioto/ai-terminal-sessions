@@ -28,7 +28,7 @@ I keep Codex, Claude Code, servers, and CI jobs open in VS Code and move through
 | Status | Tab titles show working, permission, ready, error, and idle age |
 | Session Monitor | Up to four ANSI-colored, auto-scrolling previews in a compact 2x2 window |
 | Draft recovery | Saves the visible composer after 1.5 seconds and pastes it back without submitting; `Shift+Enter` and multiline paste still work |
-| History | Restores horizontal order and keeps 20 workspace snapshots |
+| History | Keeps up to 500 closed sessions with one-tab restore and a local message preview; 20 bulk snapshots remain for recovery |
 | Rename with AI | Uses the latest two useful messages to make a lowercase topic such as `video ads` or `auth solving` |
 | Resize | Forwards VS Code dimensions to the PTY and tmux |
 
@@ -74,7 +74,7 @@ Open the repo in VS Code and press `F5`, or build a VSIX:
 
 ```sh
 npx @vscode/vsce package
-code --install-extension ai-terminal-sessions-0.4.4.vsix
+code --install-extension ai-terminal-sessions-0.4.6.vsix
 ```
 
 Run **AI Sessions: Use as Default Terminal Profile** only if you want the terminal `+` button to create managed tabs. No extension startup ordering is required or configurable in VS Code.
@@ -102,13 +102,15 @@ Keyboard scrolling enters tmux copy mode. Press `q` or `Escape` to return to the
 
 `closeBehavior` can change an explicit close to `forget` or `keep`. Failed tmux termination never drops recovery data. One VS Code window controls a workspace at a time.
 
+Explicitly closed tabs remain in **AI Sessions: Session History**. Move through the list to preview recent messages, then press `Enter` to restore only that tab. Snapshot recovery is still available as an advanced fallback and warns before adding multiple tabs.
+
 ## Rename, config, and privacy
 
 Rename with AI only runs on command. The default `sameHarness` provider keeps Codex context in Codex and Claude context in Claude. `local` skips model calls; `vscode` uses a model provided by VS Code.
 
 Other settings cover cold restore, editor or panel placement, drafts, monitor always-on-top, ready notifications, close behavior, and executable paths.
 
-There is no telemetry or hosted service. State, drafts, and history stay local. Automatic polling does not send prompts to a model. The extension is disabled in untrusted and virtual workspaces. See [Data and privacy](docs/privacy.md) for the exact data flow and deletion steps.
+There is no telemetry or hosted service. State, drafts, closed-session previews, and history stay local. Automatic polling does not send prompts to a model. The extension is disabled in untrusted and virtual workspaces. See [Data and privacy](docs/privacy.md) for the exact data flow and deletion steps.
 
 Before uninstalling, run **AI Sessions: Stop All Managed Sessions**.
 

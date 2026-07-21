@@ -18,7 +18,9 @@ Transcript content is used locally for status detection and for the explicit **R
 
 VS Code workspace/global storage contains an allowlisted session record: tmux name, working directory, titles, tab order, timestamps, agent type/session ID, and compact restore metadata. PIDs, transcript paths, raw commands, and pane start commands are not persisted.
 
-Composer recovery stores one non-empty draft per managed tab, up to 50,000 characters. Session history keeps at most 20 snapshots for seven days. Draft and history files are written with user-only permissions where the platform supports them.
+Composer recovery stores one non-empty draft per managed tab, up to 50,000 characters. Session History keeps up to 500 closed-session entries per workspace. Each entry may contain up to six recent user or assistant messages and one recovered draft, limited to 1,600 characters each. These previews are read from local Codex or Claude transcripts and stored locally so browsing history does not repeatedly scan large files or call a model.
+
+Bulk recovery keeps at most 20 snapshots for seven days. Draft, closed-session, and snapshot files are written with user-only permissions where the platform supports them.
 
 ## AI rename
 
@@ -26,7 +28,7 @@ Rename is opt-in per invocation. By default, Codex context goes only to the inst
 
 ## Deleting data
 
-Run **AI Sessions: Clear Drafts and Session History** to delete those recovery files for the current workspace.
+Run **AI Sessions: Clear Drafts and Session History** to delete drafts, closed-session previews, and snapshots for the current workspace.
 
 Run **AI Sessions: Stop All Managed Sessions** before uninstalling to terminate the private tmux sessions and remove their local recovery data. This command does not touch your normal tmux server.
 

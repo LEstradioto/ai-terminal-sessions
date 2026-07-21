@@ -2,7 +2,7 @@
   "name": "ai-terminal-sessions",
   "displayName": "AI Terminal Sessions",
   "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a floating monitor.",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "publisher": "LEstradioto",
   "author": "Luan Estradioto",
   "license": "MIT",

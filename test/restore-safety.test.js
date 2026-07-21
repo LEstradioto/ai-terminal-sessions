@@ -82,6 +82,33 @@ test('managed terminals expose keyboard paging through tmux copy mode', () => {
   assert.match(scroll, /'send-keys', '-X', '-t', target, 'page-down-and-cancel'/);
 });
 
+test('session history restores one archived tab and isolates bulk snapshot recovery', () => {
+  const restoreStart = source.indexOf('  async restoreArchivedSession(entry)');
+  const restoreEnd = source.indexOf('\n  historyQuickPickItems()', restoreStart);
+  const snapshotStart = source.indexOf('  async showSnapshotHistory()');
+  const snapshotEnd = source.indexOf('\n  async clearRecoveryData()', snapshotStart);
+  assert.notEqual(restoreStart, -1);
+  assert.notEqual(restoreEnd, -1);
+  assert.notEqual(snapshotStart, -1);
+  assert.notEqual(snapshotEnd, -1);
+  const restore = source.slice(restoreStart, restoreEnd);
+  const snapshots = source.slice(snapshotStart, snapshotEnd);
+  assert.match(restore, /this\.records\.set\(record\.id, record\)/);
+  assert.match(restore, /agent: \{ \.\.\.pane\.agent, active: true \}/);
+  assert.match(restore, /activeAgent: \{ type: resumeAgent\.type, sessionId: resumeAgent\.sessionId \}/);
+  assert.doesNotMatch(restore, /restoreTabs/);
+  assert.match(snapshots, /\{ modal: true \}/);
+  assert.match(snapshots, /Restore \$\{picked\.missing\.length\} tabs/);
+});
+
+test('explicit close archives the session before tmux termination', () => {
+  const start = source.indexOf('  async applyCloseAction(record, action)');
+  const end = source.indexOf('\n  async attachExisting()', start);
+  const close = source.slice(start, end);
+  assert.ok(close.indexOf('await this.archiveSession(record, action)')
+    < close.indexOf('await this.killTmuxSession(record.tmuxSession)'));
+});
+
 test('restored terminals replay a pane snapshot after the live bridge attaches', () => {
   const ptyStart = source.indexOf('class ManagedTmuxPty');
   const ptyEnd = source.indexOf('\n\/\* tmux owns the processes', ptyStart);
