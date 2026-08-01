@@ -2,7 +2,7 @@
 
 Agent workflows don't need another dashboard. Sometimes all you need is tabs.
 
-I built this for the way I already use VS Code: Codex, Claude Code, servers, and CI jobs open side by side, with fast keyboard navigation and no lost context after a reload.
+Open a terminal the normal VS Code way, run Codex or Claude Code, and keep working. When you return to a workspace, the extension restores its tabs, names, order, and AI sessions.
 
 [![VS Code 1.127+](https://img.shields.io/badge/VS%20Code-1.127%2B-23a8f2)](https://code.visualstudio.com/)
 [![macOS preview](https://img.shields.io/badge/platform-macOS-111827)](#tested-setup)
@@ -12,54 +12,31 @@ I built this for the way I already use VS Code: Codex, Claude Code, servers, and
 
 [Watch the 45-second demo](media/ai-terminal-sessions-demo.mp4)
 
-## What it does
-
-| Feature | Behavior |
-|---|---|
-| Persistent tabs | Each VS Code tab owns a private tmux session with one or more panes |
-| Cold restore | Codex and Claude panes resume independently; helper panes return as shells without rerunning commands |
-| Agent status | Tabs show working, permission, ready, interrupted, and idle states |
-| Session counter | Shows saved, working, and attention counts, and catches restore mismatches |
-| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in a compact floating window |
-| Draft recovery | Saves the visible composer after 1.5 seconds and restores it without submitting |
-| Session history | Keeps up to 500 closed tabs with one-tab restore and a local message preview |
-| Contextual rename | Uses the latest two useful messages to make a short lowercase topic |
-| Automatic icons | Distinguishes Codex, Claude Code, Rails servers, and regular shells |
-| Pane support | Keeps one main agent per tab while allowing servers, logs, tests, or other helpers beside it |
-
 ![A compact Session Monitor pinned over the main VS Code window](media/session-monitor.gif)
 
-## Daily workflow
+*Session Monitor keeps up to four live terminals visible while you move through the main tabs.*
 
-1. Open a persistent terminal and start Codex, Claude Code, a server, or a watch command.
-2. Move through sessions like browser tabs.
-3. Read the tab marker to see which agent is working or waiting for you.
-4. Pin long-running output to the Session Monitor when you want it in view.
-5. Reload VS Code whenever you need to. The tabs, order, panes, processes, names, and drafts return.
+## Features
 
-The Command Palette stays focused on five entry points:
-
-- **New Persistent Terminal**
-- **Session History**
-- **Customize Active Tab...**
-- **Show or Hide Session Monitor**
-- **More Actions...**
-
-Right-click a managed tab for rename, icon, draft, pane, pin, and attention actions. **Rename with AI** also remains directly available in the Command Palette.
-
-## Status markers
-
-| Marker | Meaning |
+| Feature | What it does |
 |---|---|
-| `○⠋` | Agent working |
-| `🟠` | Waiting for permission or a tool |
-| `🟢` | New answer ready |
-| `🔴` | Interrupted turn that still needs review |
-| `🟨` | Idle for less than 30 minutes |
-| `🟧` | Idle for 30 minutes to 4 hours |
-| `🟫` | Idle for more than 4 hours |
+| Normal terminal workflow | Open a VS Code terminal and run Codex or Claude Code as usual |
+| Per-workspace restore | Restores that workspace's tabs, names, order, pane layouts, and AI sessions after VS Code or computer restarts |
+| Persistent processes | Keeps terminals alive through VS Code reloads; after a computer restart, agents resume and generic panes return as shells |
+| Status at a glance | Uses `○⠋` working, `🟠` permission, `🟢` ready, `🔴` interrupted, and `🟨` → `🟧` → `🟫` as sessions age |
+| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in a compact floating window |
+| Drafts and history | Autosaves the visible composer and previews or restores one closed tab at a time |
+| Restored panes | Keeps one agent plus optional server, logs, tests, or CI panes; restores layout, directory, focus, and agent sessions |
+| Smart labels | Adds short lowercase names, automatic process icons, and optional manual colors |
+| Terminal UX | Includes 20,000-line history, resize, `Shift+Enter`, multiline paste, and tmux copy mode |
 
-Green stays green until you send the next message or mark the session as handled. Focusing a tab or editing a draft does not clear it.
+```text
+Workspace
+└── VS Code tab
+    └── private tmux session
+        ├── Codex or Claude pane
+        └── optional server, logs, tests, or CI panes
+```
 
 ## Install
 
