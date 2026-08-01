@@ -13,8 +13,19 @@ const {
   stripStatusPrefix,
 } = require('./rename-context');
 const { extractConversationPreview } = require('./conversation-preview');
+const {
+  codexSessionCacheExpired,
+  codexSessionIdFromMetadata,
+  codexSessionIdFromTranscriptPath,
+  codexTranscriptPathsFromLsof,
+  newestCodexSessionCandidate,
+} = require('./codex-session');
 const { extractDraft } = require('./draft-recovery');
-const { activityReference, isNewReadyEvent, terminalStatusIcon } = require('./session-status');
+const {
+  activityReference,
+  interruptionReference,
+  terminalStatusIcon,
+} = require('./session-status');
 const {
   activeProcess,
   activityLabel,
@@ -60,18 +71,49 @@ const {
   terminalProfileSetting,
 } = require('./runtime-paths');
 const { SessionStateStore, normalizeSessionRecord } = require('./session-state');
+const {
+  agentNeedsAttention,
+  focusedPane,
+  mergeObservedAgent,
+  normalizePaneRole,
+  normalizeRestorePolicy,
+  paneKey,
+  sameAgent,
+  sessionPaneSummary,
+  sessionPanes,
+} = require('./pane-model');
+const {
+  normalizeRelocationBundle,
+  relocateWorkspaceBundle,
+  relocationBundle,
+} = require('./workspace-relocation');
 const { WorkspaceLease } = require('./workspace-lease');
 const { WorkbenchWindowAdapter } = require('./workbench-window');
 const { matchesExecutable } = require('./process-detection');
 const { isMissingTmuxSessionError } = require('./tmux-errors');
 const {
+  DEFAULT_ICON_PRESET,
+  ICON_PRESETS,
+  automaticIconPreset,
+  iconPreset,
+  normalizeIconMode,
+  normalizeIconPreset,
+} = require('./terminal-icons');
+const {
   isSerializedTerminalStubLabel,
   staleManagedTerminalTabs,
 } = require('./workbench-recovery');
+const {
+  recordTitle,
+  sessionCounts,
+  sessionNeedsAttention,
+  sessionTabHealth,
+} = require('./session-counter');
 
 const STATE_KEY = 'aiTerminalSessions.state.v1';
 const PROFILE_ID = 'aiTerminalSessions.profile';
 const MONITOR_VIEW_TYPE = 'aiTerminalSessions.monitor';
+const MONITOR_HIDDEN_KEY = 'aiTerminalSessions.monitorHidden.v1';
 const DRAFT_MAX_CAPTURE_MS = 5000;
 const DRAFT_AUTOSAVE_DELAY_MS = 1500;
 const MONITOR_LINES = 12;
@@ -82,12 +124,16 @@ const TITLE_REFRESH_MS = 30 * 60 * 1000;
 const IDLE_RECENT_MINUTES = 30;
 const IDLE_OLD_HOURS = 4;
 const DEFAULT_TMUX_SERVER = 'ai-terminal-sessions';
+const DEFAULT_TMUX_HISTORY_LIMIT = 20000;
+const CODEX_SESSION_REFRESH_MS = 5000;
 const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 let activeManager;
 let activeLease;
+let activeStartPromise;
 let nodePtyModule;
 
 async function activate(context) {
+  const activationStartedAt = Date.now();
   const output = vscode.window.createOutputChannel('AI Terminal Sessions');
   context.subscriptions.push(output);
 
@@ -123,7 +169,30 @@ async function activate(context) {
     const manager = new SessionManager(context, output, workspaceKey);
     activeManager = manager;
     manager.register();
-    await manager.start();
+    // Eager activation should register quickly and let the workbench continue
+    // starting while terminal tabs restore in the background.
+    let startPromise;
+    startPromise = manager.start()
+      .then(() => {
+        output.appendLine(
+          `[startup] ready in ${Date.now() - activationStartedAt}ms with ${manager.records.size} session(s)`,
+        );
+      })
+      .catch(async (error) => {
+        output.appendLine(`[startup] failed: ${compactDiagnostic(messageOf(error))}`);
+        vscode.window.showErrorMessage(
+          `AI Terminal Sessions could not start: ${compactDiagnostic(messageOf(error))}`,
+        );
+        if (activeManager === manager) activeManager = undefined;
+        if (activeLease === lease) {
+          await lease.release();
+          activeLease = undefined;
+        }
+      })
+      .finally(() => {
+        if (activeStartPromise === startPromise) activeStartPromise = undefined;
+      });
+    activeStartPromise = startPromise;
   } catch (error) {
     activeManager = undefined;
     await lease.release();
@@ -133,6 +202,7 @@ async function activate(context) {
 }
 
 async function deactivate() {
+  if (activeStartPromise) await activeStartPromise;
   if (activeManager) {
     await activeManager.shutdown();
     activeManager = undefined;
@@ -176,6 +246,7 @@ class SessionManager {
     this.terminals = new Map();
     this.pendingCloseActions = new Map();
     this.ensurePromises = new Map();
+    this.appearanceRefreshes = new Map();
     this.codexPidCache = new Map();
     this.codexTranscriptCache = new Map();
     this.codexThreadNames = new Map();
@@ -207,13 +278,20 @@ class SessionManager {
       this.context.globalStorageUri.fsPath,
       `archive-${this.workspaceHash}.json`,
     );
+    this.relocationStorePath = path.join(this.context.globalStorageUri.fsPath, 'relocations');
     this.monitorPanel = undefined;
+    this.monitorFloating = false;
+    this.monitorHidden = Boolean(this.context.workspaceState.get(MONITOR_HIDDEN_KEY, false));
     this.monitorTimer = undefined;
     this.monitorRefreshing = false;
     this.monitorPreviewCache = new Map();
     this.monitorOpenPromise = undefined;
     this.serializedMonitorRecoveryPromise = undefined;
-    this.reopenSerializedMonitorAfterStart = false;
+    this.workspaceStorageId = path.basename(
+      (this.context.storageUri && this.context.storageUri.fsPath) || '',
+    );
+    this.sessionStatusBar = undefined;
+    this.closeEventsInFlight = 0;
     this.started = false;
     this.restoringTabs = false;
     this.restorePromise = undefined;
@@ -259,8 +337,14 @@ class SessionManager {
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.attachExisting', () => this.attachExisting()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.rename', () => this.renameActive()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.renameWithAI', () => this.renameActiveWithAI()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.changeIcon', () => this.changeActiveIcon()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.customizeActive', () => this.customizeActive()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.moreActions', () => this.showMoreActions()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.diagnoseRenameAI', () => this.diagnoseRenameAI()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.restoreDraft', () => this.restoreDraft()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.paneActions', () => this.showPaneActions()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.markHandled', () => this.markActiveHandled()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.markNeedsAttention', () => this.markActiveNeedsAttention()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageUp', () => this.scrollActive('up')));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageDown', () => this.scrollActive('down')));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitorPin', () => this.toggleMonitorPin()));
@@ -269,39 +353,63 @@ class SessionManager {
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.showSessionHistory', () => this.showSessionHistory()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.clearRecoveryData', () => this.clearRecoveryData()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.stopAll', () => this.stopAllManagedSessions()));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.restoreNow', async () => {
-      const restored = await this.restoreTabs(true);
-      vscode.window.showInformationMessage(
-        restored
-          ? `${restored} tab(s) restored in the main window.`
-          : 'There are no saved sessions to restore.',
-      );
-    }));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.prepareWorkspaceMove', () => this.prepareWorkspaceMove()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.importWorkspaceMove', () => this.importWorkspaceMove()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.restoreNow', () => this.restoreNow()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.makeDefault', () => this.makeDefault()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.showLog', () => this.output.show()));
+    subscriptions.push(vscode.commands.registerCommand(
+      'aiTerminalSessions.showSessionSwitcher',
+      () => this.showSessionSwitcher(),
+    ));
+
+    const sessionStatusBar = vscode.window.createStatusBarItem(
+      'aiTerminalSessions.sessionCounter',
+      vscode.StatusBarAlignment.Left,
+      10,
+    );
+    sessionStatusBar.name = 'AI Terminal Sessions';
+    sessionStatusBar.command = 'aiTerminalSessions.showSessionSwitcher';
+    this.sessionStatusBar = sessionStatusBar;
+    subscriptions.push(sessionStatusBar);
+    sessionStatusBar.show();
+    this.updateSessionStatusBar();
     subscriptions.push(vscode.window.registerWebviewPanelSerializer(MONITOR_VIEW_TYPE, {
       deserializeWebviewPanel: async (panel) => {
-        // A serialized auxiliary monitor becomes the active workbench window
-        // before extension activation. Reusing it races terminal restoration
-        // and can strand fresh terminal editors inside that window. Discard
-        // the shell and recreate the monitor after the main tabs are ready.
-        panel.dispose();
-        this.reopenSerializedMonitorAfterStart = true;
-        if (this.started) await this.reopenSerializedMonitor();
+        // VS Code persists auxiliary window bounds only while the serialized
+        // editor remains attached to that window. Reuse the panel so the
+        // user's size and position survive reload, then return focus to the
+        // main window before terminal restoration creates any editors.
+        this.serializedMonitorRecoveryPromise = this.restoreSerializedMonitor(panel);
+        await this.serializedMonitorRecoveryPromise;
       },
     }));
 
-    subscriptions.push(vscode.window.onDidOpenTerminal((terminal) => this.handleOpenTerminal(terminal)));
+    subscriptions.push(vscode.window.onDidOpenTerminal((terminal) => {
+      this.handleOpenTerminal(terminal);
+      this.updateSessionStatusBar();
+    }));
     subscriptions.push(vscode.window.onDidCloseTerminal((terminal) => {
-      this.handleCloseTerminal(terminal).catch((error) => this.log('terminal-close', error));
+      this.closeEventsInFlight += 1;
+      this.handleCloseTerminal(terminal)
+        .catch((error) => this.log('terminal-close', error))
+        .finally(() => {
+          this.closeEventsInFlight = Math.max(0, this.closeEventsInFlight - 1);
+          this.updateSessionStatusBar();
+        });
     }));
     subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => {
       this.scheduleTabOrderCapture();
-      this.updateManagedTerminalContext(this.activeRecord());
+      const record = this.activeRecord();
+      this.updateManagedTerminalContext(record);
+      this.ensureAutomaticTerminalAppearance(record)
+        .catch((error) => this.log('appearance-auto', error));
+      this.updateSessionStatusBar();
     }));
     subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => {
       this.scheduleTabOrderCapture();
       this.updateManagedTerminalContext(this.activeRecord());
+      this.updateSessionStatusBar();
     }));
     subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration('workbench.reduceMotion')) return;
@@ -314,8 +422,12 @@ class SessionManager {
       if (!record || this.restoringTabs) return;
       if (this.captureNativeRenames() || this.captureTabOrder()) this.schedulePersist();
       record.lastFocusedAt = Date.now();
-      this.acknowledgeReady(record);
+      this.acknowledgeInterrupted(record);
+      this.updateManagedTerminalContext(record);
       this.schedulePersist();
+      this.updateSessionStatusBar();
+      this.ensureAutomaticTerminalAppearance(record)
+        .catch((error) => this.log('appearance-auto', error));
     }));
   }
 
@@ -331,14 +443,17 @@ class SessionManager {
       await seedDemo(this);
     }
     await this.closeSerializedTerminalStubs();
+    if (this.serializedMonitorRecoveryPromise) await this.serializedMonitorRecoveryPromise;
     await this.restoreTabs(false);
     if (this.demoMode) await this.waitForDemoSessions();
     await this.scanAll();
     this.updateManagedTerminalContext(this.activeRecord());
     await this.updateMonitorContext();
     this.started = true;
-    if ((this.demoMode || this.reopenSerializedMonitorAfterStart) && this.pinnedRecords().length) {
-      await this.reopenSerializedMonitor();
+    this.updateSessionStatusBar();
+    if (this.monitorPanel) await this.refreshMonitor();
+    if (this.demoMode && !this.monitorPanel && this.pinnedRecords().length) {
+      await this.openMonitor();
     }
 
     this.pollTimer = setInterval(() => {
@@ -355,21 +470,21 @@ class SessionManager {
         ? vscode.workspace.getConfiguration('terminal.integrated').get(profileSetting)
         : undefined;
       if (current !== 'AI Sessions') {
-        const choice = await vscode.window.showInformationMessage(
+        Promise.resolve(vscode.window.showInformationMessage(
           'Use AI Sessions as the default terminal profile? This changes your global terminal profile and default location.',
           'Enable globally',
           'Not now',
-        );
-        if (choice === 'Enable globally') await this.makeDefault();
+        )).then((choice) => (
+          choice === 'Enable globally' ? this.makeDefault() : undefined
+        )).catch((error) => this.log('default-profile-prompt', error));
       }
     }
   }
 
   async closeSerializedTerminalStubs() {
-    const storageId = path.basename((this.context.storageUri && this.context.storageUri.fsPath) || '');
     const staleTabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) => (
       tab.input instanceof vscode.TabInputTerminal
-      && isSerializedTerminalStubLabel(tab.label, storageId)
+      && isSerializedTerminalStubLabel(tab.label, this.workspaceStorageId)
     ));
     if (!staleTabs.length) return 0;
     await vscode.window.tabGroups.close(staleTabs, true);
@@ -407,19 +522,24 @@ class SessionManager {
     return staleTabs.length;
   }
 
-  async reopenSerializedMonitor() {
-    if (this.serializedMonitorRecoveryPromise) return this.serializedMonitorRecoveryPromise;
-    this.serializedMonitorRecoveryPromise = (async () => {
-      await delay(150);
-      if (this.deactivating || !this.pinnedRecords().length) return undefined;
-      await this.workbench.switchToMainWindow();
-      await delay(100);
-      return this.openMonitor();
-    })().finally(() => {
-      this.serializedMonitorRecoveryPromise = undefined;
-      this.reopenSerializedMonitorAfterStart = false;
-    });
-    return this.serializedMonitorRecoveryPromise;
+  async restoreSerializedMonitor(panel) {
+    this.monitorFloating = true;
+    this.attachMonitorPanel(panel);
+    try {
+      await delay(80);
+      if (this.monitorHidden) {
+        await this.workbench.hidePanel(panel);
+        this.stopMonitorRefresh();
+        this.output.appendLine('[monitor] restored hidden window with saved bounds');
+      } else {
+        await this.workbench.switchToMainWindow();
+        this.output.appendLine('[monitor] restored serialized window with saved bounds');
+      }
+      if (this.started) await this.refreshMonitor();
+    } catch (error) {
+      this.log('monitor-serialized', error);
+    }
+    return panel;
   }
 
   async loadState() {
@@ -539,7 +659,7 @@ class SessionManager {
     this.sessionArchive = migrated.entries;
     let changed = migrated.changed;
     for (const entry of this.sessionArchive) {
-      const draft = this.drafts.get(entry.record.id);
+      const draft = this.latestDraftForRecord(entry.record);
       if (!draft || entry.preview.some((message) => message.role === 'draft')) continue;
       entry.preview = normalizePreview([...entry.preview, { role: 'draft', text: draft.text }]);
       changed = true;
@@ -603,9 +723,13 @@ class SessionManager {
     }, 400);
   }
 
-  noteTerminalActivity(record, source = 'output', forcePersist = false) {
+  noteTerminalActivity(record, source = 'output', forcePersist = false, pane = focusedPane(record)) {
     if (!record || !this.records.has(record.id) || this.deactivating) return;
     const now = Date.now();
+    if (pane) {
+      pane.lastTerminalActivityAt = now;
+      pane.lastTerminalActivitySource = source;
+    }
     record.lastTerminalActivityAt = now;
     record.lastTerminalActivitySource = source;
     this.refreshPtyName(record);
@@ -678,20 +802,42 @@ class SessionManager {
     this.captureDraft(record).catch((error) => this.log('draft-capture', error));
   }
 
-  async readComposer(record) {
+  draftKeyForRecord(record, pane = focusedPane(record)) {
+    return paneKey(record && record.id, pane);
+  }
+
+  latestDraftForRecord(record) {
+    const prefix = `${record.id}:`;
+    return [...this.drafts]
+      .filter(([key]) => key === record.id || key.startsWith(prefix))
+      .map(([, draft]) => draft)
+      .sort((left, right) => (right.capturedAt || 0) - (left.capturedAt || 0))[0];
+  }
+
+  deleteDraftsForRecord(record) {
+    const prefix = `${record.id}:`;
+    for (const key of [...this.drafts.keys()]) {
+      if (key === record.id || key.startsWith(prefix)) this.drafts.delete(key);
+    }
+  }
+
+  async readComposer(record, pane = focusedPane(record)) {
+    const target = pane && pane.id || `${record.tmuxSession}:`;
     const raw = await this.runTmux([
-      'capture-pane', '-p', '-J', '-t', `${record.tmuxSession}:`, '-S', '-80',
+      'capture-pane', '-p', '-J', '-t', target, '-S', '-80',
     ], true);
     return extractDraft(raw);
   }
 
   async captureDraft(record) {
     if (!record || !this.records.has(record.id) || !this.config().get('draftRecovery', true)) return;
-    const text = await this.readComposer(record);
+    const pane = await this.liveFocusedPane(record);
+    const key = this.draftKeyForRecord(record, pane);
+    const text = await this.readComposer(record, pane);
     if (!text || !this.records.has(record.id)) return;
-    const previous = this.drafts.get(record.id);
+    const previous = this.drafts.get(key);
     if (previous && previous.text === text) return;
-    this.drafts.set(record.id, { text, capturedAt: Date.now() });
+    this.drafts.set(key, { text, capturedAt: Date.now() });
     await this.persistDrafts();
     this.output.appendLine(`[draft] saved ${record.tmuxSession}: ${text.length} character(s)`);
   }
@@ -699,13 +845,15 @@ class SessionManager {
   async restoreDraft() {
     const record = this.activeRecord();
     if (!record) return this.warnManagedTerminal();
-    const snapshot = this.drafts.get(record.id);
+    const pane = await this.liveFocusedPane(record);
+    const snapshot = this.drafts.get(this.draftKeyForRecord(record, pane))
+      || this.drafts.get(record.id);
     if (!snapshot || !snapshot.text) {
       vscode.window.showInformationMessage('There is no saved draft for this tab.');
       return;
     }
 
-    const current = await this.readComposer(record);
+    const current = await this.readComposer(record, pane);
     if (current === snapshot.text) {
       vscode.window.showInformationMessage('The latest saved draft is already in the composer.');
       return;
@@ -727,7 +875,7 @@ class SessionManager {
     const bufferName = `ai-terminal-draft-${record.id.slice(0, 8)}`;
     await this.runTmuxInput(['load-buffer', '-b', bufferName, '-'], snapshot.text);
     await this.runTmux([
-      'paste-buffer', '-p', '-d', '-b', bufferName, '-t', `${record.tmuxSession}:`,
+      'paste-buffer', '-p', '-d', '-b', bufferName, '-t', pane && pane.id || `${record.tmuxSession}:`,
     ]);
     this.output.appendLine(`[draft] restored ${record.tmuxSession}: ${snapshot.text.length} character(s)`);
     vscode.window.showInformationMessage('Latest draft restored.');
@@ -742,6 +890,222 @@ class SessionManager {
 
   updateManagedTerminalContext(record) {
     vscode.commands.executeCommand('setContext', 'aiTerminalSessions.managedTerminalActive', Boolean(record));
+    const editable = Boolean(record && !['running', 'waiting', 'error', 'interrupted'].includes(record.status));
+    const needsAttention = Boolean(record && (
+      record.manuallyNeedsAttention
+      || (record.status === 'done'
+        && Number(record.readyAt) > Number(record.lastAcknowledgedReadyAt || 0))
+    ));
+    vscode.commands.executeCommand('setContext', 'aiTerminalSessions.activeAttentionEditable', editable);
+    vscode.commands.executeCommand('setContext', 'aiTerminalSessions.activeNeedsAttention', needsAttention);
+  }
+
+  terminalEditorLabels() {
+    if (!vscode.window.tabGroups) return [];
+    return vscode.window.tabGroups.all.flatMap((group) => group.tabs)
+      .filter((tab) => tab.input instanceof vscode.TabInputTerminal)
+      .map((tab) => tab.label);
+  }
+
+  currentSessionHealth() {
+    return sessionTabHealth({
+      records: this.records.values(),
+      connected: this.terminals.size,
+      terminalTabLabels: this.terminalEditorLabels(),
+      isSerializedStub: (label) => (
+        isSerializedTerminalStubLabel(label, this.workspaceStorageId)
+      ),
+      settling: !this.started
+        || this.restoringTabs
+        || this.appearanceRefreshes.size > 0
+        || this.closeEventsInFlight > 0,
+    });
+  }
+
+  hasSuspiciousTerminalEditors() {
+    const labels = this.terminalEditorLabels();
+    if (labels.some((label) => isSerializedTerminalStubLabel(label, this.workspaceStorageId))) {
+      return true;
+    }
+    return sessionTabHealth({
+      records: this.records.values(),
+      connected: this.terminals.size,
+      terminalTabLabels: labels,
+      isSerializedStub: (label) => (
+        isSerializedTerminalStubLabel(label, this.workspaceStorageId)
+      ),
+    }).extra > 0;
+  }
+
+  updateSessionStatusBar() {
+    const item = this.sessionStatusBar;
+    if (!item) return;
+
+    const counts = sessionCounts(this.records.values());
+    const health = this.currentSessionHealth();
+    item.backgroundColor = undefined;
+
+    if (!health.healthy) {
+      item.text = health.extra
+        ? `$(warning) ${health.visible} tabs / ${health.expected} sessions`
+        : `$(warning) ${health.connected}/${health.expected} connected`;
+      item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    } else if (counts.attention) {
+      item.text = `$(bell-dot) ${counts.attentionPanes || counts.attention} · $(terminal) ${counts.total}`;
+    } else if (counts.working) {
+      item.text = `$(sync~spin) ${counts.workingPanes || counts.working} · $(terminal) ${counts.total}`;
+    } else {
+      item.text = `$(terminal) ${counts.total}`;
+    }
+
+    const healthLines = health.healthy
+      ? ['Restore health: OK']
+      : [
+        `Restore health: ${health.extra} extra tab(s), ${health.missing} disconnected session(s)`,
+      ];
+    item.tooltip = [
+      'AI Terminal Sessions',
+      `${counts.total} saved session(s)`,
+      `${counts.attentionPanes} pane(s) need attention · ${counts.workingPanes} working`,
+      `${health.connected} connected · ${health.visible} visible managed tab(s)`,
+      ...healthLines,
+      'Click to switch sessions and inspect restore health.',
+    ].join('\n');
+    item.accessibilityInformation = {
+      label: health.healthy
+        ? `${counts.total} AI terminal sessions, ${counts.attentionPanes} panes need attention`
+        : `AI terminal restore warning, ${health.extra} extra tabs and ${health.missing} disconnected sessions`,
+    };
+  }
+
+  sessionSwitcherItems(now = Date.now()) {
+    const records = [...this.records.values()];
+    const compareActivity = (left, right) => (
+      activityReference(right, right.createdAt || now)
+        - activityReference(left, left.createdAt || now)
+      || (left.tabOrder || 0) - (right.tabOrder || 0)
+    );
+    const groups = [
+      {
+        label: 'Needs attention',
+        matches: (record) => sessionNeedsAttention(record),
+      },
+      {
+        label: 'Working',
+        matches: (record) => (
+          !sessionNeedsAttention(record) && sessionPaneSummary(record).working > 0
+        ),
+      },
+      {
+        label: 'Recent',
+        matches: (record) => (
+          !sessionNeedsAttention(record)
+          && record.status !== 'running'
+          && now - activityReference(record, record.createdAt || now) < IDLE_OLD_HOURS * 3600000
+        ),
+      },
+      {
+        label: 'Older',
+        matches: (record) => (
+          !sessionNeedsAttention(record)
+          && record.status !== 'running'
+          && now - activityReference(record, record.createdAt || now) >= IDLE_OLD_HOURS * 3600000
+        ),
+      },
+    ];
+    const items = [];
+    for (const group of groups) {
+      const matches = records.filter(group.matches).sort(compareActivity);
+      if (!matches.length) continue;
+      items.push({ kind: vscode.QuickPickItemKind.Separator, label: group.label });
+      for (const record of matches) {
+        const acknowledged = record.status === 'done' && !sessionNeedsAttention(record);
+        const marker = record.status === 'running'
+          ? '$(sync~spin)'
+          : terminalStatusIcon(record, {
+            now,
+            recentMinutes: IDLE_RECENT_MINUTES,
+            oldHours: IDLE_OLD_HOURS,
+          });
+        items.push({
+          label: `${marker} ${recordTitle(record)}`,
+          description: `${statusLabel(record.status, acknowledged, record.manuallyNeedsAttention)} · ${activeProcess(record)} · ${activityLabel(activityReference(record, record.createdAt || now), now)}`,
+          detail: record.cwd,
+          record,
+        });
+      }
+    }
+    return items;
+  }
+
+  async showSessionSwitcher() {
+    const health = this.currentSessionHealth();
+    const items = [];
+    if (!health.healthy) {
+      const issues = [
+        health.extra && `${health.extra} extra tab(s)`,
+        health.missing && `${health.missing} disconnected session(s)`,
+      ].filter(Boolean).join(' · ');
+      items.push({
+        label: '$(warning) Restore health needs attention',
+        description: issues,
+        detail: `${health.expected} saved · ${health.connected} connected · ${health.visible} visible`,
+        action: 'health',
+      });
+    }
+
+    const sessionItems = this.sessionSwitcherItems();
+    if (items.length && sessionItems.length) {
+      items.push({ kind: vscode.QuickPickItemKind.Separator, label: 'Open sessions' });
+    }
+    items.push(...sessionItems);
+
+    if (this.sessionArchive.length || this.sessionHistory.length) {
+      items.push({ kind: vscode.QuickPickItemKind.Separator, label: 'Closed sessions' });
+      items.push({
+        label: '$(history) Open Session History...',
+        description: `${this.sessionArchive.length} saved`,
+        action: 'history',
+      });
+    }
+    if (!this.records.size) {
+      items.push({
+        label: '$(add) New persistent terminal',
+        action: 'new',
+      });
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'AI Sessions',
+      placeHolder: health.healthy
+        ? 'Switch to a session'
+        : 'Restore health warning detected',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) return;
+    if (picked.record) return this.focusMonitorRecord(picked.record.id);
+    if (picked.action === 'history') return this.showSessionHistory();
+    if (picked.action === 'new') return this.newTerminal();
+    if (picked.action === 'health') return this.showSessionHealthWarning(health);
+  }
+
+  async showSessionHealthWarning(health = this.currentSessionHealth()) {
+    const details = [
+      health.extra && `${health.extra} extra managed terminal tab(s) are visible`,
+      health.missing && `${health.missing} saved session(s) have no terminal connection`,
+    ].filter(Boolean);
+    if (!details.length) {
+      vscode.window.showInformationMessage('AI Sessions restore health is OK.');
+      return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `${details.join('. ')}. Saved recovery data has not been removed.`,
+      'Restore tabs now',
+      'Show log',
+    );
+    if (choice === 'Restore tabs now') return this.restoreNow();
+    if (choice === 'Show log') return this.output.show();
   }
 
   async updateMonitorContext() {
@@ -777,8 +1141,9 @@ class SessionManager {
     );
 
     if (pinned && !this.monitorPanel) await this.openMonitor();
+    else if (pinned && this.monitorHidden) await this.showMonitor();
     if (!pinned && !this.pinnedRecords().length && this.monitorPanel) {
-      this.monitorPanel.dispose();
+      await this.hideMonitor();
       return;
     }
     await this.refreshMonitor();
@@ -786,10 +1151,47 @@ class SessionManager {
 
   async toggleMonitor() {
     if (this.monitorPanel) {
-      this.monitorPanel.dispose();
-      return;
+      return this.monitorHidden ? this.showMonitor() : this.hideMonitor();
     }
     await this.openMonitor();
+  }
+
+  async setMonitorHidden(hidden) {
+    this.monitorHidden = Boolean(hidden);
+    await this.context.workspaceState.update(MONITOR_HIDDEN_KEY, this.monitorHidden);
+  }
+
+  async hideMonitor() {
+    const panel = this.monitorPanel;
+    if (!panel || this.monitorHidden) return panel;
+    if (!this.monitorFloating) {
+      panel.dispose();
+      return undefined;
+    }
+    const returnTerminal = vscode.window.activeTerminal;
+    const hidden = await this.workbench.hidePanel(panel);
+    if (!hidden) return panel;
+    await this.setMonitorHidden(true);
+    this.stopMonitorRefresh();
+    if (returnTerminal) returnTerminal.show(false);
+    this.output.appendLine('[monitor] hidden without destroying saved bounds');
+    return panel;
+  }
+
+  async showMonitor() {
+    const panel = this.monitorPanel;
+    if (!panel) return this.openMonitor();
+    const returnTerminal = vscode.window.activeTerminal;
+    const shown = this.monitorFloating && await this.workbench.showPanel(panel, {
+      alwaysOnTop: this.config().get('monitorAlwaysOnTop', true),
+    });
+    if (!shown) panel.reveal(undefined, true);
+    await this.setMonitorHidden(false);
+    this.startMonitorRefresh();
+    await this.refreshMonitor();
+    if (returnTerminal) returnTerminal.show(false);
+    this.output.appendLine('[monitor] shown with preserved bounds');
+    return panel;
   }
 
   async openMonitor() {
@@ -808,6 +1210,7 @@ class SessionManager {
   }
 
   async openMonitorImpl() {
+    await this.setMonitorHidden(false);
     const returnTerminal = vscode.window.activeTerminal;
     const showOptions = vscode.ViewColumn.Active;
     const panel = vscode.window.createWebviewPanel(
@@ -819,7 +1222,7 @@ class SessionManager {
     this.attachMonitorPanel(panel);
     await this.refreshMonitor();
 
-    await this.floatMonitorPanel(panel, returnTerminal);
+    this.monitorFloating = await this.floatMonitorPanel(panel, returnTerminal);
     return panel;
   }
 
@@ -841,7 +1244,7 @@ class SessionManager {
       }
     });
     panel.onDidChangeViewState(() => {
-      if (panel.visible) {
+      if (panel.visible && !this.monitorHidden) {
         this.startMonitorRefresh();
         this.refreshMonitor().catch((error) => this.log('monitor-visible', error));
       } else {
@@ -851,9 +1254,13 @@ class SessionManager {
     panel.onDidDispose(() => {
       if (this.monitorPanel !== panel) return;
       this.monitorPanel = undefined;
+      this.monitorFloating = false;
       this.stopMonitorRefresh();
+      if (!this.deactivating) {
+        this.setMonitorHidden(false).catch((error) => this.log('monitor-state', error));
+      }
     });
-    this.startMonitorRefresh();
+    if (!this.monitorHidden) this.startMonitorRefresh();
   }
 
   async floatMonitorPanel(panel, returnTerminal) {
@@ -867,19 +1274,22 @@ class SessionManager {
           'AI Sessions: floating monitor is unavailable in this VS Code build',
           5000,
         );
-        return;
+        return false;
       }
       await delay(80);
       if (returnTerminal) returnTerminal.show(false);
       this.output.appendLine('[monitor] opened floating compact monitor');
+      return true;
     } catch (error) {
       this.log('monitor-float', error);
       if (returnTerminal) returnTerminal.show(false);
+      return false;
     }
   }
 
   startMonitorRefresh() {
-    if (this.monitorTimer || !this.monitorPanel || !this.monitorPanel.visible || this.deactivating) return;
+    if (this.monitorHidden || this.monitorTimer || !this.monitorPanel
+      || !this.monitorPanel.visible || this.deactivating) return;
     this.monitorTimer = setInterval(() => {
       this.refreshMonitor().catch((error) => this.log('monitor-refresh', error));
     }, MONITOR_REFRESH_MS);
@@ -892,7 +1302,7 @@ class SessionManager {
 
   async refreshMonitor() {
     const panel = this.monitorPanel;
-    if (!panel || !panel.visible || this.monitorRefreshing || this.deactivating) return;
+    if (this.monitorHidden || !panel || !panel.visible || this.monitorRefreshing || this.deactivating) return;
     this.monitorRefreshing = true;
     try {
       const now = Date.now();
@@ -918,8 +1328,8 @@ class SessionManager {
           id: record.id,
           title: record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession),
           process: activeProcess(record),
-          status: statusLabel(record.status, acknowledged),
-          tone: statusTone(record.status, acknowledged),
+          status: statusLabel(record.status, acknowledged, record.manuallyNeedsAttention),
+          tone: statusTone(record.status, acknowledged, record.manuallyNeedsAttention),
           age: activityLabel(activityAt, now),
           preview,
           lines: terminal.lines,
@@ -966,6 +1376,8 @@ class SessionManager {
       owned: true,
       autoTitle: shortTitle(`${workspaceName} ${sequence}`),
       manualTitle: '',
+      iconPreset: DEFAULT_ICON_PRESET,
+      iconMode: 'auto',
       status: 'idle',
       monitorPinned: false,
       windows: [],
@@ -973,6 +1385,7 @@ class SessionManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       lastFocusedAt: Date.now(),
+      manuallyNeedsAttention: false,
       ...overrides,
     };
     this.records.set(record.id, record);
@@ -988,12 +1401,14 @@ class SessionManager {
   }
 
   terminalOptions(record, pty, includeLocation, restoring) {
+    const appearance = iconPreset(record.iconPreset);
+    pty.iconPreset = appearance.id;
     const options = {
       name: this.formatTerminalName(record),
       pty,
       isTransient: true,
-      iconPath: new vscode.ThemeIcon('terminal-tmux'),
-      color: new vscode.ThemeColor('terminal.ansiCyan'),
+      iconPath: new vscode.ThemeIcon(appearance.icon),
+      color: new vscode.ThemeColor(appearance.color),
     };
     if (!includeLocation) return options;
 
@@ -1014,6 +1429,86 @@ class SessionManager {
     this.openRecord(record, false);
   }
 
+  async restoreNow() {
+    const restored = await this.restoreTabs(true);
+    vscode.window.showInformationMessage(
+      restored
+        ? `${restored} tab(s) restored in the main window.`
+        : 'There are no saved sessions to restore.',
+    );
+  }
+
+  async customizeActive() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    const title = record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession);
+    const items = [
+      { label: '$(sparkle) Rename with AI', action: 'rename-ai' },
+      { label: '$(edit) Rename manually', action: 'rename' },
+      { label: '$(symbol-color) Change icon and color', action: 'icon' },
+      { kind: vscode.QuickPickItemKind.Separator, label: 'Session' },
+      { label: '$(history) Recover last draft', action: 'draft' },
+      { label: '$(layout) Tmux pane actions', action: 'panes' },
+      {
+        label: record.monitorPinned
+          ? '$(pinned) Remove from Session Monitor'
+          : '$(pin) Pin to Session Monitor',
+        action: 'pin',
+      },
+      { kind: vscode.QuickPickItemKind.Separator, label: 'Danger zone' },
+      { label: '$(trash) Remove session...', action: 'remove' },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Customize ${title}`,
+      placeHolder: 'Choose what to change',
+    });
+    if (!picked || !picked.action) return;
+    if (picked.action === 'rename-ai') return this.renameActiveWithAI();
+    if (picked.action === 'rename') return this.renameActive();
+    if (picked.action === 'icon') return this.changeActiveIcon();
+    if (picked.action === 'draft') return this.restoreDraft();
+    if (picked.action === 'panes') return this.showPaneActions();
+    if (picked.action === 'pin') return this.toggleMonitorPin();
+    if (picked.action === 'remove') return this.removeActive();
+  }
+
+  async showMoreActions() {
+    const items = [
+      { label: '$(settings-gear) Open extension settings', action: 'settings' },
+      { label: '$(terminal) Use as default terminal profile', action: 'default' },
+      { kind: vscode.QuickPickItemKind.Separator, label: 'Recovery' },
+      { label: '$(refresh) Restore tabs now', action: 'restore' },
+      { label: '$(plug) Recover orphaned private session', action: 'attach' },
+      { label: '$(export) Prepare workspace move...', action: 'prepare-move' },
+      { label: '$(import) Import a prepared workspace move...', action: 'import-move' },
+      { kind: vscode.QuickPickItemKind.Separator, label: 'Maintenance' },
+      { label: '$(output) Show log', action: 'log' },
+      { label: '$(pulse) Diagnose AI rename', action: 'diagnose' },
+      { label: '$(clear-all) Clear recovery data...', action: 'clear' },
+      { label: '$(debug-stop) Stop all managed sessions...', action: 'stop' },
+    ];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'AI Sessions: More Actions',
+      placeHolder: 'Settings, recovery, and maintenance',
+    });
+    if (!picked || !picked.action) return;
+    if (picked.action === 'settings') {
+      return vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        '@ext:LEstradioto.ai-terminal-sessions',
+      );
+    }
+    if (picked.action === 'default') return this.makeDefault();
+    if (picked.action === 'restore') return this.restoreNow();
+    if (picked.action === 'attach') return this.attachExisting();
+    if (picked.action === 'prepare-move') return this.prepareWorkspaceMove();
+    if (picked.action === 'import-move') return this.importWorkspaceMove();
+    if (picked.action === 'log') return this.output.show();
+    if (picked.action === 'diagnose') return this.diagnoseRenameAI();
+    if (picked.action === 'clear') return this.clearRecoveryData();
+    if (picked.action === 'stop') return this.stopAllManagedSessions();
+  }
+
   openRecord(record, restoring) {
     if (this.terminals.has(record.id)) return this.terminals.get(record.id);
     const pty = this.createPty(record);
@@ -1026,9 +1521,11 @@ class SessionManager {
   async restoreTabs(force) {
     if (this.restorePromise) return this.restorePromise;
     this.restoringTabs = true;
+    this.updateSessionStatusBar();
     this.restorePromise = this.restoreTabsImpl(force).finally(() => {
       this.restoringTabs = false;
       this.restorePromise = undefined;
+      this.updateSessionStatusBar();
     });
     return this.restorePromise;
   }
@@ -1063,13 +1560,18 @@ class SessionManager {
 
   async restoreTabsImpl(force) {
     if (force) this.captureTabOrder();
-    const floatingMonitor = force && this.monitorPanel
+    const recoverAuxiliaryEditors = force
+      && (!this.monitorPanel || this.hasSuspiciousTerminalEditors());
+    const floatingMonitor = recoverAuxiliaryEditors && this.monitorPanel
       ? this.monitorPanel
       : undefined;
+    if (force && this.monitorPanel && !recoverAuxiliaryEditors) {
+      this.output.appendLine('[restore] kept healthy monitor window in place with saved bounds');
+    }
 
     // A terminal editor can survive in an auxiliary window after a workbench
     // reload. Move any stranded editors back before resolving the saved tabs.
-    if (force) {
+    if (recoverAuxiliaryEditors) {
       try {
         await this.workbench.restoreEditorsToMainWindow();
         await delay(100);
@@ -1159,7 +1661,7 @@ class SessionManager {
     if (preferredTerminal) preferredTerminal.show(false);
     else if (lastTerminal) lastTerminal.show(false);
     if (floatingMonitor && this.monitorPanel === floatingMonitor) {
-      await this.floatMonitorPanel(floatingMonitor, lastTerminal);
+      this.monitorFloating = await this.floatMonitorPanel(floatingMonitor, lastTerminal);
     }
     this.output.appendLine(`[restore] ${force ? 'manual' : 'startup'}: ${records.length} tab(s) directed to main window`);
     return records.length;
@@ -1465,11 +1967,14 @@ class SessionManager {
 
   async clearRecoveryData() {
     const choice = await vscode.window.showWarningMessage(
-      'Delete saved composer drafts, closed sessions, and snapshots for this workspace?',
+      'Delete saved composer drafts, closed sessions, snapshots, and prepared moves for this workspace?',
       { modal: true },
       'Delete recovery data',
     );
     if (choice !== 'Delete recovery data') return;
+    const relocationFiles = (await this.readRelocationBundles())
+      .filter(({ bundle }) => bundle.sourceWorkspaceKey === this.workspaceKey)
+      .map(({ file }) => file);
     this.drafts.clear();
     this.sessionHistory = [];
     this.sessionArchive = [];
@@ -1477,8 +1982,180 @@ class SessionManager {
       fs.promises.unlink(this.draftStorePath).catch(ignoreMissingFile),
       fs.promises.unlink(this.historyStorePath).catch(ignoreMissingFile),
       fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
+      ...relocationFiles.map((file) => fs.promises.unlink(file).catch(ignoreMissingFile)),
     ]);
-    vscode.window.showInformationMessage('Local drafts, closed sessions, and snapshots were deleted.');
+    vscode.window.showInformationMessage('Local drafts, closed sessions, snapshots, and prepared moves were deleted.');
+  }
+
+  async prepareWorkspaceMove() {
+    const records = [...this.records.values()];
+    if (!records.length) {
+      vscode.window.showInformationMessage('There are no managed sessions to relocate.');
+      return;
+    }
+    const roots = currentWorkspaceRoots();
+    if (!roots.length) {
+      vscode.window.showErrorMessage('Open a local workspace folder before preparing a move.');
+      return;
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `Save ${records.length} session(s) for relocation and stop their tmux processes? Recovery data will be kept.`,
+      { modal: true },
+      'Prepare and stop sessions',
+    );
+    if (choice !== 'Prepare and stop sessions') return;
+
+    await this.scanAll();
+    await Promise.all(records.map((record) => (
+      this.captureDraft(record).catch((error) => this.log('relocation-draft', error))
+    )));
+    await this.persist('before-relocation');
+    await Promise.all([
+      this.persistDrafts(),
+      this.persistSessionHistory(),
+      this.persistSessionArchive(),
+    ]);
+
+    const savedState = this.stateStore.load();
+    const id = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    const bundle = relocationBundle({
+      id,
+      workspaceKey: this.workspaceKey,
+      roots,
+      records: savedState ? savedState.records : records,
+      drafts: Object.fromEntries(this.drafts),
+      snapshots: this.sessionHistory,
+      archive: this.sessionArchive,
+    });
+    await this.writeRelocationBundle(bundle);
+
+    for (const record of records) {
+      const terminal = this.terminals.get(record.id);
+      if (terminal) this.disposeManagedTerminal(record, terminal, 'keep');
+    }
+    await waitFor(() => this.closeEventsInFlight === 0, 2000, 25);
+
+    const failures = [];
+    for (const record of records) {
+      try {
+        await this.killTmuxSession(record.tmuxSession);
+      } catch (error) {
+        failures.push(record.tmuxSession);
+        this.log('relocation-stop', error);
+      }
+    }
+    if (failures.length) {
+      vscode.window.showErrorMessage(
+        `${failures.length} session(s) could not be stopped. The relocation bundle was saved; inspect the log before moving files.`,
+      );
+      return;
+    }
+    for (const record of records) {
+      this.cancelDraftCapture(record);
+      this.monitorPreviewCache.delete(record.id);
+    }
+    this.records.clear();
+    await Promise.all([
+      this.persist('relocation-suspended'),
+      this.updateMonitorContext(),
+    ]);
+    this.updateSessionStatusBar();
+    vscode.window.showInformationMessage(
+      'Workspace move prepared. Quit VS Code, move the folder, open its new location, then run Import a Prepared Workspace Move.',
+    );
+  }
+
+  async importWorkspaceMove() {
+    if (this.records.size) {
+      vscode.window.showWarningMessage(
+        'Import relocation data into a workspace with no managed sessions to avoid duplicate tabs.',
+      );
+      return;
+    }
+    const roots = currentWorkspaceRoots();
+    if (!roots.length) {
+      vscode.window.showErrorMessage('Open the relocated local workspace before importing its sessions.');
+      return;
+    }
+    const bundles = await this.readRelocationBundles();
+    if (!bundles.length) {
+      vscode.window.showInformationMessage('No prepared workspace moves were found.');
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(bundles.map(({ bundle, file }) => ({
+      label: `$(folder-opened) ${bundle.sourceRoots.map((root) => root.name).join(', ')}`,
+      description: `${bundle.records.length} session(s) · ${new Date(bundle.createdAt).toLocaleString()}`,
+      detail: bundle.sourceRoots.map((root) => root.fsPath).join(' · '),
+      bundle,
+      file,
+    })), {
+      title: 'Import Prepared Workspace Move',
+      placeHolder: 'Choose the previous workspace location',
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) return;
+
+    let relocated;
+    try {
+      relocated = relocateWorkspaceBundle(picked.bundle, this.workspaceKey, roots);
+    } catch (error) {
+      vscode.window.showErrorMessage(`Could not import workspace move: ${messageOf(error)}`);
+      return;
+    }
+    for (const raw of sortRecordsForRestore(relocated.records)) {
+      const record = normalizeSessionRecord(raw, this.workspaceKey);
+      if (record) this.records.set(record.id, record);
+    }
+    this.drafts = new Map(Object.entries(relocated.drafts || {}));
+    this.sessionHistory = normalizeSessionHistory(historyPayload(
+      this.workspaceKey,
+      relocated.snapshots,
+    ), this.workspaceKey);
+    this.sessionArchive = normalizeArchivePayload(archivePayload(
+      this.workspaceKey,
+      relocated.archive,
+    ), this.workspaceKey);
+    await this.persist('relocation-import');
+    await Promise.all([
+      this.persistDrafts(),
+      this.persistSessionHistory(),
+      this.persistSessionArchive(),
+    ]);
+    await this.restoreTabs(true);
+    await this.scanAll();
+    await fs.promises.unlink(picked.file).catch(ignoreMissingFile);
+    vscode.window.showInformationMessage(`${this.records.size} relocated session(s) restored.`);
+  }
+
+  async writeRelocationBundle(bundle) {
+    await fs.promises.mkdir(this.relocationStorePath, { recursive: true, mode: 0o700 });
+    const file = path.join(this.relocationStorePath, `${bundle.id}.json`);
+    const temporary = `${file}.${process.pid}.tmp`;
+    await fs.promises.writeFile(temporary, JSON.stringify(bundle), { encoding: 'utf8', mode: 0o600 });
+    await fs.promises.rename(temporary, file);
+    return file;
+  }
+
+  async readRelocationBundles() {
+    let files;
+    try {
+      files = await fs.promises.readdir(this.relocationStorePath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    const results = await Promise.all(files.filter((file) => file.endsWith('.json')).map(async (name) => {
+      const file = path.join(this.relocationStorePath, name);
+      try {
+        const bundle = normalizeRelocationBundle(JSON.parse(await fs.promises.readFile(file, 'utf8')));
+        return bundle ? { bundle, file } : undefined;
+      } catch (error) {
+        this.log('relocation-load', error);
+        return undefined;
+      }
+    }));
+    return results.filter(Boolean).sort((left, right) => right.bundle.createdAt - left.bundle.createdAt);
   }
 
   async stopAllManagedSessions() {
@@ -1507,7 +2184,7 @@ class SessionManager {
       try {
         await this.killTmuxSession(record.tmuxSession);
         this.records.delete(record.id);
-        this.drafts.delete(record.id);
+        this.deleteDraftsForRecord(record);
         this.monitorPreviewCache.delete(record.id);
       } catch (error) {
         failures.push(record.tmuxSession);
@@ -1524,7 +2201,7 @@ class SessionManager {
         fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
       ]);
     }
-    if (this.monitorPanel && !this.pinnedRecords().length) this.monitorPanel.dispose();
+    if (this.monitorPanel && !this.pinnedRecords().length) await this.hideMonitor();
     if (failures.length) {
       vscode.window.showErrorMessage(
         `${failures.length} session(s) could not be terminated. Their recovery state was kept; see the log.`,
@@ -1641,6 +2318,118 @@ class SessionManager {
     await this.runTmux(['send-keys', '-X', '-t', target, 'page-down-and-cancel'], true);
   }
 
+  async showPaneActions() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    await this.scanAll();
+    const pane = focusedPane(record);
+    const panes = sessionPanes(record);
+    const items = [
+      { label: '$(split-horizontal) Split right', description: 'Ctrl+B %', action: 'split-right' },
+      { label: '$(split-vertical) Split down', description: 'Ctrl+B "', action: 'split-down' },
+      { label: '$(arrow-swap) Focus next pane', description: 'Ctrl+B o', action: 'next' },
+      { label: '$(screen-full) Toggle pane zoom', description: 'Ctrl+B z', action: 'zoom' },
+      { label: '$(symbol-property) Set pane role...', action: 'role' },
+      { label: '$(book) Enter scrollback', description: 'Ctrl+B [', action: 'copy-mode' },
+      { kind: vscode.QuickPickItemKind.Separator, label: 'Keyboard' },
+      {
+        label: '$(keyboard) Show tmux keyboard reference',
+        description: 'Ctrl+B ?',
+        action: 'help',
+      },
+    ];
+    if (panes.length > 1) {
+      items.push({ kind: vscode.QuickPickItemKind.Separator, label: 'Pane' });
+      items.push({ label: '$(trash) Close focused pane...', description: 'Ctrl+B x', action: 'close' });
+    }
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Tmux Panes · ${recordTitle(record)}`,
+      placeHolder: `${panes.length || 1} pane(s) · Prefix is Ctrl+B`,
+    });
+    if (!picked || !picked.action) return;
+    const target = pane && pane.id || `${record.tmuxSession}:`;
+    if (picked.action === 'split-right' || picked.action === 'split-down') {
+      await this.runTmux([
+        'split-window', picked.action === 'split-right' ? '-h' : '-v',
+        '-t', target,
+        '-c', existingDirectory(pane && pane.cwd || record.cwd),
+      ]);
+    } else if (picked.action === 'next') {
+      await this.runTmux(['select-pane', '-t', `${record.tmuxSession}:.+`], true);
+    } else if (picked.action === 'zoom') {
+      await this.runTmux(['resize-pane', '-Z', '-t', target]);
+    } else if (picked.action === 'copy-mode') {
+      await this.runTmux(['copy-mode', '-u', '-t', target]);
+    } else if (picked.action === 'role') {
+      await this.changeFocusedPaneRole(record, pane);
+      return;
+    } else if (picked.action === 'close') {
+      const confirmation = await vscode.window.showWarningMessage(
+        'Close the focused tmux pane and terminate its process?',
+        { modal: true },
+        'Close pane',
+      );
+      if (confirmation !== 'Close pane') return;
+      await this.runTmux(['kill-pane', '-t', target]);
+    } else if (picked.action === 'help') {
+      await vscode.window.showInformationMessage(
+        'Ctrl+B then: % split right · " split down · arrows move · o next · z zoom · x close · [ scrollback · ? all bindings',
+      );
+      return;
+    }
+    await delay(80);
+    await this.scanAll();
+    this.schedulePersist();
+  }
+
+  async changeFocusedPaneRole(record, pane = focusedPane(record)) {
+    if (!pane) return;
+    if (pane.agent) {
+      vscode.window.showInformationMessage('Agent pane roles are detected automatically.');
+      return;
+    }
+    const roles = [
+      ['server', '$(server) Server'],
+      ['logs', '$(output) Logs'],
+      ['test', '$(beaker) Tests'],
+      ['ci', '$(rocket) CI or deploy'],
+      ['shell', '$(terminal) Shell'],
+      ['helper', '$(tools) Helper'],
+    ].map(([role, label]) => ({ label, role, picked: pane.role === role }));
+    const picked = await vscode.window.showQuickPick(roles, {
+      title: 'Pane role',
+      placeHolder: 'Used in the tmux pane border and restore metadata',
+    });
+    if (!picked) return;
+    pane.role = picked.role;
+    pane.restorePolicy = pane.agent ? 'resume-agent' : 'shell';
+    await this.configurePanePresentation(record);
+    this.schedulePersist();
+  }
+
+  async markActiveHandled() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    await this.scanAll();
+    if (!this.acknowledgeAttention(record)) return;
+    this.schedulePersist();
+  }
+
+  async markActiveNeedsAttention() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    await this.scanAll();
+    if (['running', 'waiting', 'error', 'interrupted'].includes(record.status)) return;
+    if (record.manuallyNeedsAttention) return;
+    const agent = focusedPane(record)?.agent;
+    if (agent) agent.manuallyNeedsAttention = true;
+    record.manuallyNeedsAttention = true;
+    this.refreshPtyName(record);
+    this.updateManagedTerminalContext(record);
+    this.updateSessionStatusBar();
+    this.schedulePersist();
+  }
+
   async renameActive() {
     const record = this.activeRecord();
     if (!record) return this.warnManagedTerminal();
@@ -1655,6 +2444,96 @@ class SessionManager {
     if (!record.manualTitle) record.lastAutoTitleAt = 0;
     this.refreshPtyName(record);
     await this.persist();
+  }
+
+  async changeActiveIcon() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    const current = normalizeIconPreset(record.iconPreset);
+    const mode = normalizeIconMode(record.iconMode, record.iconPreset);
+    const automatic = normalizeIconPreset(record.detectedIconPreset || automaticIconPreset({
+      agentType: record.activeAgent && record.activeAgent.type,
+    }));
+    const items = [{
+      label: '$(wand) Automatic',
+      description: `Currently detects ${iconPreset(automatic).label}`,
+      detail: mode === 'auto' ? 'Current mode' : undefined,
+      mode: 'auto',
+    }, {
+      kind: vscode.QuickPickItemKind.Separator,
+      label: 'Manual icons',
+    }, ...ICON_PRESETS.map((preset) => ({
+      label: `${preset.marker} ${preset.label}`,
+      description: preset.description,
+      detail: mode === 'manual' && preset.id === current ? 'Current icon' : undefined,
+      preset,
+      mode: 'manual',
+    }))];
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'Tab icon and color',
+      placeHolder: 'Choose an icon for this session',
+      matchOnDescription: true,
+    });
+    if (!picked || !picked.mode) return;
+    if (picked.mode === 'auto' && mode === 'auto') return;
+    if (picked.mode === 'manual' && mode === 'manual' && picked.preset.id === current) return;
+
+    this.captureTabOrder();
+    record.iconMode = picked.mode;
+    record.iconPreset = picked.mode === 'auto' ? automatic : picked.preset.id;
+    await this.persist('icon-change');
+    try {
+      await this.reopenTerminalAppearance(record);
+    } catch (error) {
+      this.log('appearance', error);
+      vscode.window.showErrorMessage(
+        'The icon was saved, but the tab could not reconnect. Use More Actions to restore tabs.',
+      );
+      return;
+    }
+    vscode.window.setStatusBarMessage(
+      picked.mode === 'auto'
+        ? 'AI Sessions: automatic icon detection enabled'
+        : `AI Sessions: ${picked.preset.label} icon applied`,
+      2500,
+    );
+  }
+
+  async ensureAutomaticTerminalAppearance(record) {
+    if (!record || !this.started || this.restoringTabs
+      || normalizeIconMode(record.iconMode, record.iconPreset) !== 'auto') return;
+    const active = this.activeRecord();
+    if (!active || active.id !== record.id) return;
+    const pty = this.ptys.get(record.id);
+    if (!pty || pty.iconPreset === normalizeIconPreset(record.iconPreset)) return;
+    const current = this.appearanceRefreshes.get(record.id);
+    if (current) return current;
+    const refresh = this.reopenTerminalAppearance(record).finally(() => {
+      if (this.appearanceRefreshes.get(record.id) === refresh) {
+        this.appearanceRefreshes.delete(record.id);
+      }
+    });
+    this.appearanceRefreshes.set(record.id, refresh);
+    return refresh;
+  }
+
+  async reopenTerminalAppearance(record) {
+    const terminal = this.terminals.get(record.id);
+    if (!terminal) return;
+    const currentPty = this.ptys.get(record.id);
+    if (currentPty && currentPty.iconPreset === normalizeIconPreset(record.iconPreset)) return;
+    this.captureTabOrder();
+    this.disposeManagedTerminal(record, terminal, 'keep');
+    await delay(100);
+    if (!this.records.has(record.id)) return;
+
+    await this.ensureSession(record);
+    const replacement = this.openRecord(record, true);
+    replacement.show(false);
+    const pty = this.ptys.get(record.id);
+    const ready = pty && await waitFor(() => pty.bridgeReady(), 1800, 25);
+    if (ready) await pty.replayVisiblePane();
+    else this.output.appendLine(`[appearance] PTY bridge did not open: ${record.tmuxSession}`);
   }
 
   async renameActiveWithAI() {
@@ -1766,7 +2645,7 @@ class SessionManager {
       const snapshot = await readJsonlTail(transcript);
       preview = extractConversationPreview(agent.type, snapshot.entries);
     }
-    const draft = this.drafts.get(record.id);
+    const draft = this.latestDraftForRecord(record);
     if (draft && draft.text) preview.push({ role: 'draft', text: draft.text });
     return normalizePreview(preview);
   }
@@ -1990,10 +2869,10 @@ class SessionManager {
     this.records.delete(record.id);
     this.monitorPreviewCache.delete(record.id);
     this.cancelDraftCapture(record);
-    this.drafts.delete(record.id);
+    this.deleteDraftsForRecord(record);
     await Promise.all([this.persist(), this.persistDrafts(), this.updateMonitorContext()]);
     if (wasPinned && !this.pinnedRecords().length && this.monitorPanel) {
-      this.monitorPanel.dispose();
+      await this.hideMonitor();
     } else if (wasPinned) {
       await this.refreshMonitor();
     }
@@ -2012,8 +2891,11 @@ class SessionManager {
       const panes = (await this.runTmux([
         'list-panes', '-t', name, '-F', '#{pane_id}',
       ], true)).split('\n').filter(Boolean);
-      if (panes.length !== 1) continue;
-      items.push({ label: name, description: 'orphaned private session', name });
+      items.push({
+        label: name,
+        description: `orphaned private session · ${panes.length || 1} pane(s)`,
+        name,
+      });
     }
 
     if (!items.length) {
@@ -2105,8 +2987,13 @@ class SessionManager {
       name: 'shell', active: true, panes: [{ cwd: record.cwd, active: true }],
     };
     const savedWindow = savedWindows.find((window) => window.active) || savedWindows[0] || fallbackWindow;
-    const savedPane = savedWindow.panes.find((pane) => pane.active) || savedWindow.panes[0];
+    const savedPanes = [...savedWindow.panes].sort((left, right) => left.index - right.index);
+    const savedPane = savedPanes[0];
+    // history-limit is captured when tmux creates a window. Set the global
+    // default in the same command queue before new-session so the first pane
+    // also receives the larger scrollback buffer on a fresh private server.
     const args = [
+      'set-option', '-g', 'history-limit', String(DEFAULT_TMUX_HISTORY_LIMIT), ';',
       'new-session', '-d', '-s', record.tmuxSession,
       '-n', safeTmuxName(savedWindow.name || 'shell'),
       '-c', existingDirectory(savedPane.cwd || record.cwd),
@@ -2115,6 +3002,50 @@ class SessionManager {
     const command = this.restoreCommand(savedPane.agent);
     if (command) args.push(command);
     await this.runTmux(args);
+
+    const restoredPanes = [];
+    const firstPaneId = (await this.runTmux([
+      'display-message', '-p', '-t', `${record.tmuxSession}:.0`, '#{pane_id}',
+    ])).trim();
+    restoredPanes.push(this.restoredPaneRuntime(savedPane, firstPaneId));
+
+    for (const pane of savedPanes.slice(1)) {
+      const split = [
+        'split-window', '-d', '-P', '-F', '#{pane_id}',
+        '-t', `${record.tmuxSession}:`,
+        '-c', existingDirectory(pane.cwd || record.cwd),
+      ];
+      const paneCommand = this.restoreCommand(pane.agent);
+      if (paneCommand) split.push(paneCommand);
+      const paneId = (await this.runTmux(split)).trim().split('\n').filter(Boolean).pop();
+      restoredPanes.push(this.restoredPaneRuntime(pane, paneId));
+    }
+
+    const runtimeWindow = { ...savedWindow, panes: restoredPanes };
+    await this.configurePanePresentation({ ...record, windows: [runtimeWindow] });
+    if (savedWindow.layout && restoredPanes.length > 1) {
+      await this.runTmux([
+        'select-layout', '-t', `${record.tmuxSession}:`, savedWindow.layout,
+      ], true);
+    }
+    const activeIndex = Math.max(0, savedPanes.findIndex((pane) => pane.active));
+    const activePane = restoredPanes[activeIndex] || restoredPanes[0];
+    if (activePane && activePane.id) {
+      await this.runTmux(['select-pane', '-t', activePane.id], true);
+      record.activePaneId = activePane.logicalId;
+    }
+  }
+
+  restoredPaneRuntime(savedPane, paneId) {
+    const logicalId = savedPane.logicalId || crypto.randomUUID();
+    savedPane.logicalId = logicalId;
+    return {
+      ...savedPane,
+      id: paneId,
+      logicalId,
+      role: normalizePaneRole(savedPane.role, Boolean(savedPane.agent)),
+      restorePolicy: normalizeRestorePolicy(savedPane.restorePolicy, Boolean(savedPane.agent)),
+    };
   }
 
   restoreCommand(agent) {
@@ -2141,19 +3072,57 @@ class SessionManager {
   async configureTmuxSession(record) {
     // VS Code sends modified Enter as CSI-u. The private tmux server starts
     // without a tmux.conf, so explicitly preserve extended keys for TUIs.
-    await this.runTmux(['set-option', '-s', 'terminal-features[100]', 'xterm*:extkeys']);
-    await this.runTmux(['set-option', '-s', 'extended-keys-format', 'csi-u']);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'extended-keys', 'always']);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, '@ai-terminal-id', record.id], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, '@ai-terminal-workspace', this.workspaceHash], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'destroy-unattached', 'off'], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'status', 'off'], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'set-titles', 'off'], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'prefix', 'None'], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'prefix2', 'None'], true);
-    await this.runTmux(['set-option', '-t', record.tmuxSession, 'mouse', 'on'], true);
-    await this.runTmux(['set-window-option', '-t', `${record.tmuxSession}:`, 'window-size', 'latest'], true);
-    await this.runTmux(['set-window-option', '-t', `${record.tmuxSession}:`, 'automatic-rename', 'off'], true);
+    await this.runTmux([
+      'set-option', '-s', 'terminal-features[100]', 'xterm*:extkeys', ';',
+      'set-option', '-s', 'extended-keys-format', 'csi-u', ';',
+      'set-option', '-t', record.tmuxSession, 'extended-keys', 'always', ';',
+      'set-option', '-t', record.tmuxSession, '@ai-terminal-id', record.id, ';',
+      'set-option', '-t', record.tmuxSession, '@ai-terminal-workspace', this.workspaceHash, ';',
+      'set-option', '-t', record.tmuxSession, 'destroy-unattached', 'off', ';',
+      'set-option', '-t', record.tmuxSession, 'status', 'off', ';',
+      'set-option', '-t', record.tmuxSession, 'set-titles', 'off', ';',
+      'set-option', '-t', record.tmuxSession, 'prefix', 'C-b', ';',
+      'set-option', '-t', record.tmuxSession, 'prefix2', 'None', ';',
+      'set-option', '-t', record.tmuxSession, 'mouse', 'on', ';',
+      'set-option', '-s', 'copy-command', '/usr/bin/pbcopy', ';',
+      'bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane',
+      'send-keys', '-X', 'copy-pipe-no-clear', ';',
+      'bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane',
+      'send-keys', '-X', 'copy-pipe-no-clear', ';',
+      'bind-key', '-T', 'copy-mode', 'v', 'send-keys', '-X', 'begin-selection', ';',
+      'bind-key', '-T', 'copy-mode', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel', ';',
+      'bind-key', '-T', 'copy-mode-vi', 'v', 'send-keys', '-X', 'begin-selection', ';',
+      'bind-key', '-T', 'copy-mode-vi', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel', ';',
+      'unbind-key', '-q', '-T', 'root', 'MouseDown3Pane', ';',
+      'unbind-key', '-q', '-T', 'root', 'M-MouseDown3Pane', ';',
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'window-size', 'latest', ';',
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'automatic-rename', 'off', ';',
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-status',
+      sessionPanes(record).length > 1 ? 'top' : 'off', ';',
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-format',
+      ' #{?pane_active,#[bold],}#{pane_index} #{@ai-pane-role} ',
+    ]);
+  }
+
+  async configurePanePresentation(record) {
+    const panes = sessionPanes(record);
+    const args = [];
+    for (const pane of panes) {
+      if (!pane.id) continue;
+      if (args.length) args.push(';');
+      args.push(
+        'set-option', '-p', '-t', pane.id, '@ai-pane-id', pane.logicalId || crypto.randomUUID(), ';',
+        'set-option', '-p', '-t', pane.id, '@ai-pane-role', pane.role || 'shell',
+      );
+    }
+    if (args.length) args.push(';');
+    args.push(
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-status',
+      panes.length > 1 ? 'top' : 'off', ';',
+      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-format',
+      ' #{?pane_active,#[bold],}#{pane_index} #{@ai-pane-role} ',
+    );
+    await this.runTmux(args, true);
   }
 
   async resizeSession(record, dimensions) {
@@ -2201,9 +3170,11 @@ class SessionManager {
     await this.loadCodexThreadNames();
     const panesRaw = await this.runTmux([
       'list-panes', '-a', '-F',
-      '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_layout}\t#{pane_id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}\t#{pane_title}\t#{pane_start_command}',
+      '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_layout}\t#{pane_id}\t#{@ai-pane-id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}\t#{pane_title}\t#{pane_start_command}',
     ], true);
-    const panesBySession = groupPanesBySession(parseTmuxPanes(panesRaw));
+    const parsedPanes = parseTmuxPanes(panesRaw);
+    await this.ensurePaneIdentities(parsedPanes);
+    const panesBySession = groupPanesBySession(parsedPanes);
     const processTable = await readProcessTable();
     const now = Date.now();
     const snapshotDue = now - this.lastSnapshotAt >= SNAPSHOT_MS;
@@ -2217,6 +3188,7 @@ class SessionManager {
     this.updateWorkingAnimation();
     if (snapshotDue) this.lastSnapshotAt = now;
     if (changed || snapshotDue) this.schedulePersist();
+    this.updateSessionStatusBar();
   }
 
   captureNativeRenames(force = false) {
@@ -2228,6 +3200,26 @@ class SessionManager {
       changed = this.captureNativeRename(record, terminal, pty, now, force) || changed;
     }
     return changed;
+  }
+
+  async ensurePaneIdentities(panes) {
+    const recordsBySession = new Map(
+      [...this.records.values()].map((record) => [record.tmuxSession, record]),
+    );
+    const commands = [];
+    for (const pane of panes) {
+      if (pane.logicalId) continue;
+      const record = recordsBySession.get(pane.session);
+      const previous = record && (record.windows || [])
+        .find((window) => window.index === pane.windowIndex)?.panes
+        ?.find((item) => item.index === pane.paneIndex);
+      pane.logicalId = previous && previous.logicalId || crypto.randomUUID();
+      if (commands.length) commands.push(';');
+      commands.push(
+        'set-option', '-p', '-t', pane.id, '@ai-pane-id', pane.logicalId,
+      );
+    }
+    if (commands.length) await this.runTmux(commands, true);
   }
 
   captureNativeRename(record, terminal, pty, now = Date.now(), force = false) {
@@ -2251,13 +3243,16 @@ class SessionManager {
   async scanRecord(record, panes, processTable, now, snapshotDue) {
     const oldWindows = record.windows || [];
     const previousByPosition = new Map();
+    const previousByLogicalId = new Map();
     for (const window of oldWindows) {
       for (const pane of window.panes || []) {
         previousByPosition.set(`${window.index}:${pane.index}`, pane);
+        if (pane.logicalId) previousByLogicalId.set(pane.logicalId, pane);
       }
     }
 
     const windowsById = new Map();
+    const events = [];
     for (const pane of panes) {
       let window = windowsById.get(pane.windowId);
       if (!window) {
@@ -2266,24 +3261,55 @@ class SessionManager {
           index: pane.windowIndex,
           name: pane.windowName,
           active: pane.windowActive,
+          layout: pane.layout,
           panes: [],
         };
         windowsById.set(pane.windowId, window);
       }
-      const previous = previousByPosition.get(`${pane.windowIndex}:${pane.paneIndex}`);
-      let agent = await this.detectAgent(pane, processTable, now);
-      if (!agent && previous && previous.agent) {
-        const grace = now - (previous.agent.lastSeenAt || 0) < 10000;
-        agent = { ...previous.agent, active: grace, status: grace ? previous.agent.status : 'idle' };
+      const previous = previousByLogicalId.get(pane.logicalId)
+        || previousByPosition.get(`${pane.windowIndex}:${pane.paneIndex}`);
+      let previousAgent = previous && previous.agent;
+      if (previousAgent && sameAgent(previousAgent, record.activeAgent)) {
+        previousAgent = {
+          ...previousAgent,
+          lastActivityAt: Number(previousAgent.lastActivityAt)
+            || Number(record.lastAgentActivityAt) || 0,
+          readyAt: Number(previousAgent.readyAt) || Number(record.readyAt) || 0,
+          lastAcknowledgedReadyAt: Number(previousAgent.lastAcknowledgedReadyAt)
+            || Number(record.lastAcknowledgedReadyAt) || 0,
+          manuallyNeedsAttention: Boolean(
+            previousAgent.manuallyNeedsAttention || record.manuallyNeedsAttention
+          ),
+          interruptedAt: Number(previousAgent.interruptedAt) || Number(record.interruptedAt) || 0,
+          lastAcknowledgedInterruptedAt: Number(previousAgent.lastAcknowledgedInterruptedAt)
+            || Number(record.lastAcknowledgedInterruptedAt) || 0,
+        };
+      }
+      const observedAgent = await this.detectAgent(pane, processTable, now, record, previousAgent);
+      let agent = observedAgent && mergeObservedAgent(previousAgent, observedAgent, now);
+      if (!agent && previousAgent) {
+        const grace = now - (previousAgent.lastSeenAt || 0) < 10000;
+        agent = { ...previousAgent, active: grace, status: grace ? previousAgent.status : 'idle' };
         if (!grace) delete agent.pid;
+      }
+      if (agent && (agent.newlyReady
+        || (previousAgent && previousAgent.status === 'running' && agent.status === 'waiting'))) {
+        events.push({ agent, status: agent.status });
       }
       window.panes.push({
         id: pane.id,
+        logicalId: pane.logicalId,
         index: pane.paneIndex,
         cwd: pane.cwd,
         process: pane.command,
         startCommand: pane.startCommand,
         active: pane.active,
+        lastTerminalActivityAt: Number(previous && previous.lastTerminalActivityAt)
+          || (previous && previous.active ? Number(record.lastTerminalActivityAt) || 0 : 0),
+        lastTerminalActivitySource: previous && previous.lastTerminalActivitySource
+          || (previous && previous.active ? record.lastTerminalActivitySource : undefined),
+        role: normalizePaneRole(previous && previous.role, Boolean(agent)),
+        restorePolicy: normalizeRestorePolicy(previous && previous.restorePolicy, Boolean(agent)),
         ...(agent && { agent }),
       });
     }
@@ -2294,36 +3320,63 @@ class SessionManager {
         ...window,
         panes: window.panes.sort((a, b) => a.index - b.index),
       }));
-    const activeAgents = windows.flatMap((window) => window.panes)
-      .filter((pane) => pane.agent && pane.agent.active)
-      .map((pane) => ({ ...pane.agent, paneActive: pane.active }));
-    activeAgents.sort((a, b) => agentPriority(b) - agentPriority(a));
-    const selected = activeAgents[0];
-    const oldStatus = record.status;
+    const focused = focusedPane({ windows });
+    const selected = focused && focused.agent && focused.agent.active ? focused.agent : undefined;
+    const allAgents = windows.flatMap((window) => window.panes)
+      .map((pane) => pane.agent)
+      .filter(Boolean);
+    const processes = panes.flatMap((pane) => descendantsOf(Number(pane.pid), processTable));
+    const detectedIconPreset = automaticIconPreset({
+      agentType: selected && selected.type,
+      processes,
+      railsProject: panes.some((pane) => (
+        fs.existsSync(path.join(pane.cwd, 'config', 'application.rb'))
+      )),
+    });
     const oldFingerprint = record.fingerprint;
-    const newlyReady = isNewReadyEvent(record, selected);
+    const oldPaneCount = sessionPanes(record).length;
 
     record.windows = windows;
-    record.cwd = (windows.find((window) => window.active)?.panes.find((pane) => pane.active)?.cwd) || record.cwd;
+    record.activePaneId = focused && focused.logicalId;
+    record.cwd = focused && focused.cwd || record.cwd;
+    record.lastAgentActivityAt = selected ? Number(selected.lastActivityAt) || 0 : 0;
+    record.lastTerminalActivityAt = focused ? Number(focused.lastTerminalActivityAt) || 0 : 0;
+    record.lastTerminalActivitySource = focused && focused.lastTerminalActivitySource;
     record.status = selected ? selected.status : 'idle';
-    if (selected && selected.lastActivityAt) record.lastAgentActivityAt = selected.lastActivityAt;
+    record.readyAt = selected ? Number(selected.readyAt) || 0 : 0;
+    record.lastAcknowledgedReadyAt = selected
+      ? Number(selected.lastAcknowledgedReadyAt) || 0 : 0;
+    record.manuallyNeedsAttention = selected ? Boolean(selected.manuallyNeedsAttention) : false;
+    record.interruptedAt = selected ? Number(selected.interruptedAt) || 0 : 0;
+    record.lastAcknowledgedInterruptedAt = selected
+      ? Number(selected.lastAcknowledgedInterruptedAt) || 0 : 0;
     record.sourceTitle = selected && selected.title ? selected.title : record.sourceTitle;
     record.activeAgent = selected ? { type: selected.type, sessionId: selected.sessionId } : undefined;
-    if (newlyReady) {
-      record.readyAt = now;
+    record.backgroundAttentionCount = allAgents.filter((agent) => (
+      agent !== selected && agentNeedsAttention(agent)
+    )).length;
+    record.detectedIconPreset = detectedIconPreset;
+    if (normalizeIconMode(record.iconMode, record.iconPreset) === 'auto') {
+      record.iconPreset = detectedIconPreset;
     }
     record.updatedAt = snapshotDue ? now : record.updatedAt;
     this.updateAutomaticTitle(record, selected, now);
     record.fingerprint = fingerprintRecord(record);
     this.refreshPtyName(record);
+    if (this.activeRecord()?.id === record.id) this.updateManagedTerminalContext(record);
+    this.ensureAutomaticTerminalAppearance(record)
+      .catch((error) => this.log('appearance-auto', error));
+    if (oldPaneCount !== sessionPanes(record).length) {
+      this.configurePanePresentation(record).catch((error) => this.log('pane-presentation', error));
+    }
 
-    if (selected && (newlyReady || (oldStatus === 'running' && selected.status === 'waiting'))) {
-      this.notifyReady(record, selected.status);
+    for (const event of events) {
+      this.notifyReady(record, event.status, event.agent.title);
     }
     return oldFingerprint !== record.fingerprint;
   }
 
-  async detectAgent(pane, processTable, now) {
+  async detectAgent(pane, processTable, now, record, previousAgent) {
     const processes = descendantsOf(Number(pane.pid), processTable);
     const claudeCandidates = processes.filter((item) => matchesExecutable(item, 'claude'));
     for (const processInfo of claudeCandidates) {
@@ -2333,7 +3386,7 @@ class SessionManager {
 
     const codexCandidates = processes.filter((item) => matchesExecutable(item, 'codex'));
     for (const processInfo of codexCandidates) {
-      const agent = await this.resolveCodexAgent(processInfo, pane, now);
+      const agent = await this.resolveCodexAgent(processInfo, pane, now, record, previousAgent);
       if (agent) return agent;
     }
     return undefined;
@@ -2352,7 +3405,7 @@ class SessionManager {
     if (!UUID_RE.test(sessionId || '')) {
       return {
         type: 'claude', sessionId: '', pid: processInfo.pid, process: 'claude',
-        status: 'running', title: 'Claude Code', active: true, lastSeenAt: now,
+        status: 'idle', title: 'Claude Code', active: true, lastSeenAt: now,
       };
     }
 
@@ -2375,19 +3428,25 @@ class SessionManager {
     };
   }
 
-  async resolveCodexAgent(processInfo, pane, now) {
+  async resolveCodexAgent(processInfo, pane, now, record, previousAgent) {
     const cacheKey = `${processInfo.pid}:${processInfo.command}`;
     const cached = this.codexPidCache.get(cacheKey);
     let sessionId = cached && cached.sessionId;
-    if (!sessionId && (!cached || now - cached.at >= 5000)) {
+    if (codexSessionCacheExpired(cached, now, CODEX_SESSION_REFRESH_MS)) {
       const argId = processInfo.command.match(/\bresume\s+([0-9a-f-]{36})\b/i)?.[1];
-      sessionId = UUID_RE.test(argId || '') ? argId : await this.queryCodexSessionId(processInfo.pid);
+      const detected = await this.queryCodexSessionId(
+        processInfo.pid,
+        previousAgent && previousAgent.sessionId || codexSessionHint(record),
+      );
+      sessionId = UUID_RE.test(detected || '')
+        ? detected
+        : UUID_RE.test(argId || '') ? argId : sessionId;
       this.codexPidCache.set(cacheKey, { at: now, sessionId });
     }
     if (!UUID_RE.test(sessionId || '')) {
       return {
         type: 'codex', sessionId: '', pid: processInfo.pid, process: 'codex',
-        status: 'running', title: 'Codex', active: true, lastSeenAt: now,
+        status: 'idle', title: 'Codex', active: true, lastSeenAt: now,
       };
     }
 
@@ -2411,19 +3470,48 @@ class SessionManager {
     };
   }
 
-  async queryCodexSessionId(pid) {
+  async queryCodexSessionId(pid, preferredSessionId) {
     const db = codexLogDatabase();
-    if (!db) return undefined;
-    const query = `SELECT thread_id FROM logs WHERE process_uuid LIKE 'pid:${Number(pid)}:%' AND thread_id IS NOT NULL ORDER BY ts DESC LIMIT 1;`;
+    if (db) {
+      const query = `SELECT thread_id FROM logs WHERE process_uuid LIKE 'pid:${Number(pid)}:%' AND thread_id IS NOT NULL ORDER BY ts DESC LIMIT 1;`;
+      try {
+        const raw = await execFileText(resolveExecutable('sqlite3', 'sqlite3'), [
+          '-readonly', '-noheader', '-cmd', '.timeout 100', db, query,
+        ], { timeout: 2000 });
+        const sessionId = raw.trim().split('\n')
+          .find((line) => UUID_RE.test(line.trim()))?.trim();
+        if (sessionId) return sessionId;
+      } catch (error) {
+        this.log('codex-sqlite', error);
+      }
+    }
+    return this.queryCodexOpenSessionId(pid, preferredSessionId);
+  }
+
+  async queryCodexOpenSessionId(pid, preferredSessionId) {
+    let raw;
     try {
-      const raw = await execFileText(resolveExecutable('sqlite3', 'sqlite3'), [
-        '-readonly', '-noheader', '-cmd', '.timeout 100', db, query,
+      raw = await execFileText(resolveExecutable('lsof', 'lsof'), [
+        '-p', String(Number(pid)), '-Fn',
       ], { timeout: 2000 });
-      return raw.trim().split('\n').find((line) => UUID_RE.test(line.trim()))?.trim();
-    } catch (error) {
-      this.log('codex-sqlite', error);
+    } catch {
       return undefined;
     }
+    const transcripts = codexTranscriptPathsFromLsof(raw, codexHome());
+    if (!transcripts.length) return undefined;
+    const candidates = [];
+    for (const transcript of transcripts) {
+      try {
+        const [prefix, stat] = await Promise.all([
+          readFilePrefix(transcript),
+          fs.promises.stat(transcript),
+        ]);
+        const sessionId = codexSessionIdFromMetadata(prefix)
+          || codexSessionIdFromTranscriptPath(transcript);
+        if (sessionId) candidates.push({ sessionId, modifiedAt: stat.mtimeMs });
+      } catch {}
+    }
+    return newestCodexSessionCandidate(candidates, preferredSessionId);
   }
 
   async loadCodexThreadNames() {
@@ -2495,12 +3583,82 @@ class SessionManager {
     }, 800);
   }
 
-  acknowledgeReady(record) {
-    if (!record || record.status !== 'done' || !record.readyAt) return false;
-    if ((record.lastAcknowledgedReadyAt || 0) >= record.readyAt) return false;
-    record.lastAcknowledgedReadyAt = record.readyAt;
+  acknowledgeReady(record, pane = focusedPane(record)) {
+    if (!record) return false;
+    const agent = pane && pane.agent;
+    const status = agent ? agent.status : record.status;
+    const readyAt = agent ? Number(agent.readyAt) || 0 : Number(record.readyAt) || 0;
+    const acknowledgedAt = agent
+      ? Number(agent.lastAcknowledgedReadyAt) || 0
+      : Number(record.lastAcknowledgedReadyAt) || 0;
+    if (status !== 'done' || !readyAt || acknowledgedAt >= readyAt) return false;
+    if (agent) agent.lastAcknowledgedReadyAt = readyAt;
+    record.lastAcknowledgedReadyAt = readyAt;
     this.refreshPtyName(record);
     return true;
+  }
+
+  acknowledgeInterrupted(record, pane = focusedPane(record)) {
+    if (!record) return false;
+    const agent = pane && pane.agent;
+    const interruptedAt = agent
+      ? Number(agent.interruptedAt) || Number(agent.lastActivityAt) || 0
+      : interruptionReference(record);
+    const acknowledgedAt = agent
+      ? Number(agent.lastAcknowledgedInterruptedAt) || 0
+      : Number(record.lastAcknowledgedInterruptedAt) || 0;
+    if (!interruptedAt
+      || acknowledgedAt >= interruptedAt) return false;
+    if (agent) {
+      agent.lastAcknowledgedInterruptedAt = interruptedAt;
+      if (agent.status === 'interrupted') agent.status = 'idle';
+    }
+    record.lastAcknowledgedInterruptedAt = interruptedAt;
+    if (record.status === 'interrupted') record.status = 'idle';
+    this.refreshPtyName(record);
+    return true;
+  }
+
+  acknowledgeAttention(record, pane = focusedPane(record)) {
+    const agent = pane && pane.agent;
+    const manual = Boolean(record && (record.manuallyNeedsAttention
+      || agent && agent.manuallyNeedsAttention));
+    if (agent) agent.manuallyNeedsAttention = false;
+    if (record) record.manuallyNeedsAttention = false;
+    const ready = this.acknowledgeReady(record, pane);
+    const interrupted = this.acknowledgeInterrupted(record, pane);
+    const changed = manual || ready || interrupted;
+    if (changed) {
+      this.refreshPtyName(record);
+      this.updateManagedTerminalContext(record);
+      this.updateSessionStatusBar();
+    }
+    return changed;
+  }
+
+  async acknowledgeSubmittedInput(record) {
+    const pane = await this.liveFocusedPane(record);
+    this.acknowledgeAttention(record, pane);
+    this.noteTerminalActivity(record, 'input', true, pane);
+  }
+
+  async liveFocusedPane(record) {
+    let pane = focusedPane(record);
+    const raw = (await this.runTmux([
+      'display-message', '-p', '-t', `${record.tmuxSession}:`,
+      '#{pane_id}\t#{@ai-pane-id}',
+    ], true)).trim();
+    const [paneId, logicalId] = raw.split('\t');
+    let exact = sessionPanes(record).find((candidate) => (
+      candidate.id === paneId || logicalId && candidate.logicalId === logicalId
+    ));
+    if (!exact && paneId) {
+      await this.scanAll();
+      exact = sessionPanes(record).find((candidate) => (
+        candidate.id === paneId || logicalId && candidate.logicalId === logicalId
+      ));
+    }
+    return exact || pane;
   }
 
   refreshPtyName(record) {
@@ -2508,14 +3666,15 @@ class SessionManager {
     if (pty) pty.setName(this.formatTerminalName(record));
   }
 
-  notifyReady(record, status) {
+  notifyReady(record, status, paneTitle = '') {
     if (!this.config().get('notifyWhenReady', false)) return;
     const terminal = this.terminals.get(record.id);
     if (terminal && terminal === vscode.window.activeTerminal) return;
     const title = record.manualTitle || record.autoTitle || record.tmuxSession;
+    const subject = paneTitle && paneTitle !== title ? `${title} · ${paneTitle}` : title;
     const message = status === 'waiting'
-      ? `${title} is waiting for permission.`
-      : `${title} finished and needs your attention.`;
+      ? `${subject} is waiting for permission.`
+      : `${subject} finished and needs your attention.`;
     vscode.window.showInformationMessage(message, 'Open').then((choice) => {
       if (choice === 'Open' && terminal) terminal.show(false);
     });
@@ -2656,12 +3815,12 @@ class ManagedTmuxPty {
 
   handleInput(data) {
     if (this.child) this.child.write(data);
-    if (this.manager.acknowledgeReady(this.record)) this.manager.schedulePersist();
     const input = analyzeTerminalInput(data, this.bracketedPasteActive);
     this.bracketedPasteActive = input.pasteActive;
     if (input.submitted) {
+      this.manager.acknowledgeSubmittedInput(this.record)
+        .catch((error) => this.manager.log('attention-submit', error));
       this.manager.cancelDraftCapture(this.record);
-      this.manager.noteTerminalActivity(this.record, 'input', true);
     } else if (input.editing) {
       this.manager.scheduleDraftCapture(this.record);
     }
@@ -2760,13 +3919,14 @@ function parseTmuxPanes(raw) {
       windowActive: parts[4] === '1',
       layout: parts[5],
       id: parts[6],
-      paneIndex: Number(parts[7]),
-      pid: Number(parts[8]),
-      cwd: parts[9],
-      command: parts[10],
-      active: parts[11] === '1',
-      title: parts[12],
-      startCommand: parts.slice(13).join('\t'),
+      logicalId: parts[7],
+      paneIndex: Number(parts[8]),
+      pid: Number(parts[9]),
+      cwd: parts[10],
+      command: parts[11],
+      active: parts[12] === '1',
+      title: parts[13],
+      startCommand: parts.slice(14).join('\t'),
     };
   }).filter((pane) => pane.session && pane.id);
 }
@@ -2929,6 +4089,20 @@ async function readJsonlTail(file, maxBytes = 512 * 1024) {
   }
 }
 
+async function readFilePrefix(file, maxBytes = 256 * 1024) {
+  let handle;
+  try {
+    handle = await fs.promises.open(file, 'r');
+    const stat = await handle.stat();
+    const length = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, 0);
+    return buffer.toString('utf8');
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
 async function findFileEndingWith(root, suffix) {
   let entries;
   try {
@@ -2982,22 +4156,23 @@ function isUsefulPrompt(text) {
     && !value.startsWith('[Request interrupted');
 }
 
-function agentPriority(agent) {
-  const status = { waiting: 40, done: 30, running: 20, interrupted: 10 }[agent.status] || 0;
-  return status + (agent.paneActive ? 2 : 0) + (agent.lastSeenAt || 0) / 1e13;
-}
-
 function fingerprintRecord(record) {
   const windows = (record.windows || []).map((window) => ({
     index: window.index,
     name: window.name,
     active: window.active,
+    layout: window.layout,
     panes: (window.panes || []).map((pane) => ({
+      logicalId: pane.logicalId,
       index: pane.index,
       cwd: pane.cwd,
       process: pane.process,
       startCommand: pane.startCommand,
       active: pane.active,
+      lastTerminalActivityAt: pane.lastTerminalActivityAt,
+      lastTerminalActivitySource: pane.lastTerminalActivitySource,
+      role: pane.role,
+      restorePolicy: pane.restorePolicy,
       agent: pane.agent && {
         type: pane.agent.type,
         sessionId: pane.agent.sessionId,
@@ -3008,6 +4183,11 @@ function fingerprintRecord(record) {
         transcript: pane.agent.transcript,
         active: pane.agent.active,
         lastActivityAt: pane.agent.lastActivityAt,
+        readyAt: pane.agent.readyAt,
+        lastAcknowledgedReadyAt: pane.agent.lastAcknowledgedReadyAt,
+        manuallyNeedsAttention: pane.agent.manuallyNeedsAttention,
+        interruptedAt: pane.agent.interruptedAt,
+        lastAcknowledgedInterruptedAt: pane.agent.lastAcknowledgedInterruptedAt,
       },
     })),
   }));
@@ -3015,10 +4195,19 @@ function fingerprintRecord(record) {
     status: record.status,
     autoTitle: record.autoTitle,
     manualTitle: record.manualTitle,
+    iconMode: record.iconMode,
+    iconPreset: record.iconPreset,
     activeAgent: record.activeAgent,
     lastAgentActivityAt: record.lastAgentActivityAt,
+    lastTerminalActivityAt: record.lastTerminalActivityAt,
+    lastTerminalActivitySource: record.lastTerminalActivitySource,
     readyAt: record.readyAt,
     lastAcknowledgedReadyAt: record.lastAcknowledgedReadyAt,
+    manuallyNeedsAttention: record.manuallyNeedsAttention,
+    interruptedAt: record.interruptedAt,
+    lastAcknowledgedInterruptedAt: record.lastAcknowledgedInterruptedAt,
+    activePaneId: record.activePaneId,
+    backgroundAttentionCount: record.backgroundAttentionCount,
     windows,
   }));
 }
@@ -3033,6 +4222,13 @@ function getWorkspaceName() {
   if (vscode.workspace.name) return vscode.workspace.name;
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
   return folder ? folder.name : path.basename(getDefaultCwd()) || 'terminal';
+}
+
+function currentWorkspaceRoots() {
+  return (vscode.workspace.workspaceFolders || []).map((folder) => ({
+    name: folder.name,
+    fsPath: folder.uri.fsPath,
+  })).filter((root) => root.fsPath);
 }
 
 function getDefaultCwd() {
@@ -3072,6 +4268,20 @@ function encodeClaudeProject(value) {
 
 function codexHome() {
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+}
+
+function codexSessionHint(record) {
+  const candidates = [];
+  if (record && record.activeAgent && record.activeAgent.type === 'codex') {
+    candidates.push(record.activeAgent.sessionId);
+  }
+  for (const window of record && Array.isArray(record.windows) ? record.windows : []) {
+    for (const pane of Array.isArray(window.panes) ? window.panes : []) {
+      if (pane.agent && pane.agent.type === 'codex') candidates.push(pane.agent.sessionId);
+    }
+  }
+  candidates.push(record && record.titleSourceSessionId);
+  return candidates.find((sessionId) => UUID_RE.test(sessionId || ''));
 }
 
 function codexLogDatabase() {

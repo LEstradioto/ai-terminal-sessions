@@ -20,6 +20,10 @@ function sessionAgent(record) {
 }
 
 function archiveKey(record) {
+  const agents = (record && record.windows || []).flatMap((window) => (window.panes || []))
+    .map((pane) => pane.agent)
+    .filter((agent) => agent && agent.sessionId);
+  if (agents.length > 1) return `tab:${String(record && record.id || '')}`;
   const agent = sessionAgent(record);
   return agent ? `${agent.type}:${agent.sessionId}` : `tab:${String(record && record.id || '')}`;
 }

@@ -58,6 +58,22 @@ test('migrates missing records from snapshots but excludes active sessions', () 
   assert.deepEqual(result.entries.map((entry) => entry.title), ['closed']);
 });
 
+test('archives a multipane agent group as one durable tab', () => {
+  const value = record('review', '11111111-1111-1111-1111-111111111111');
+  value.windows[0].panes.push({
+    logicalId: 'second',
+    cwd: value.cwd,
+    agent: {
+      type: 'claude',
+      sessionId: '22222222-2222-2222-2222-222222222222',
+      active: true,
+    },
+  });
+  const result = upsertArchivedSession([], value, { archivedAt: 100 });
+  assert.equal(result.entry.key, 'tab:review');
+  assert.equal(result.entries.length, 1);
+});
+
 test('archive payload is workspace scoped and bounded', () => {
   let entries = [];
   for (let index = 0; index < 4; index += 1) {

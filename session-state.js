@@ -1,7 +1,10 @@
 'use strict';
 
+const { normalizeIconMode, normalizeIconPreset } = require('./terminal-icons');
+const { normalizePaneRole, normalizeRestorePolicy } = require('./pane-model');
+
 const SESSION_STATE_VERSION = 1;
-const VALID_STATUS = new Set(['idle', 'running', 'waiting', 'done', 'interrupted']);
+const VALID_STATUS = new Set(['idle', 'running', 'waiting', 'done', 'interrupted', 'error']);
 const VALID_AGENT = new Set(['claude', 'codex']);
 const VALID_TERMINAL_ACTIVITY_SOURCE = new Set(['input', 'output']);
 const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -25,6 +28,11 @@ function normalizeAgent(agent) {
     title: shortString(agent.title, 500),
     lastActivityAt: finiteNumber(agent.lastActivityAt),
     lastSeenAt: finiteNumber(agent.lastSeenAt),
+    readyAt: finiteNumber(agent.readyAt),
+    lastAcknowledgedReadyAt: finiteNumber(agent.lastAcknowledgedReadyAt),
+    manuallyNeedsAttention: Boolean(agent.manuallyNeedsAttention),
+    interruptedAt: finiteNumber(agent.interruptedAt),
+    lastAcknowledgedInterruptedAt: finiteNumber(agent.lastAcknowledgedInterruptedAt),
   };
 }
 
@@ -35,14 +43,22 @@ function normalizeWindows(windows) {
     index: finiteNumber(window && window.index),
     name: shortString(window && window.name, 80) || 'shell',
     active: Boolean(window && window.active),
+    layout: shortString(window && window.layout, 2000),
     panes: Array.isArray(window && window.panes) ? window.panes.slice(0, 16).map((pane) => {
       const agent = normalizeAgent(pane && pane.agent);
       return {
         id: shortString(pane && pane.id, 80),
+        logicalId: shortString(pane && pane.logicalId, 128),
         index: finiteNumber(pane && pane.index),
         cwd: shortString(pane && pane.cwd, 4096),
         process: shortString(pane && pane.process, 256),
         active: Boolean(pane && pane.active),
+        lastTerminalActivityAt: finiteNumber(pane && pane.lastTerminalActivityAt),
+        lastTerminalActivitySource: VALID_TERMINAL_ACTIVITY_SOURCE.has(
+          pane && pane.lastTerminalActivitySource
+        ) ? pane.lastTerminalActivitySource : undefined,
+        role: normalizePaneRole(pane && pane.role, Boolean(agent)),
+        restorePolicy: normalizeRestorePolicy(pane && pane.restorePolicy, Boolean(agent)),
         ...(agent && { agent }),
       };
     }) : [],
@@ -61,6 +77,8 @@ function normalizeSessionRecord(raw, workspaceKey) {
     owned: raw.owned !== false,
     autoTitle: shortString(raw.autoTitle, 80),
     manualTitle: shortString(raw.manualTitle, 80),
+    iconPreset: normalizeIconPreset(raw.iconPreset),
+    iconMode: normalizeIconMode(raw.iconMode, raw.iconPreset),
     sourceTitle: shortString(raw.sourceTitle, 500),
     status: VALID_STATUS.has(raw.status) ? raw.status : 'idle',
     monitorPinned: Boolean(raw.monitorPinned),
@@ -69,8 +87,13 @@ function normalizeSessionRecord(raw, workspaceKey) {
     createdAt: finiteNumber(raw.createdAt),
     updatedAt: finiteNumber(raw.updatedAt),
     lastFocusedAt: finiteNumber(raw.lastFocusedAt),
+    activePaneId: shortString(raw.activePaneId, 128),
+    backgroundAttentionCount: finiteNumber(raw.backgroundAttentionCount),
     readyAt: finiteNumber(raw.readyAt),
     lastAcknowledgedReadyAt: finiteNumber(raw.lastAcknowledgedReadyAt),
+    manuallyNeedsAttention: Boolean(raw.manuallyNeedsAttention),
+    interruptedAt: finiteNumber(raw.interruptedAt),
+    lastAcknowledgedInterruptedAt: finiteNumber(raw.lastAcknowledgedInterruptedAt),
     lastAgentActivityAt: finiteNumber(raw.lastAgentActivityAt),
     lastTerminalActivityAt: finiteNumber(raw.lastTerminalActivityAt),
     lastTerminalActivitySource: VALID_TERMINAL_ACTIVITY_SOURCE.has(raw.lastTerminalActivitySource)

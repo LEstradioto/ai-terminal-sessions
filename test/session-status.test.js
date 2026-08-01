@@ -2,7 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isNewReadyEvent, terminalStatusIcon } = require('../session-status');
+const {
+  interruptionReference,
+  interruptionWasAcknowledged,
+  isNewReadyEvent,
+  terminalStatusIcon,
+} = require('../session-status');
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -33,11 +38,51 @@ test('keeps an unseen completed answer green until its ready event is acknowledg
   assert.equal(terminalStatusIcon(record, { now: 1000 }), '🟨');
 });
 
+test('a manual attention marker turns an idle session green', () => {
+  const record = {
+    status: 'idle',
+    manuallyNeedsAttention: true,
+    lastAgentActivityAt: 1,
+  };
+  assert.equal(terminalStatusIcon(record, { now: 10 * HOUR }), '🟢');
+  record.manuallyNeedsAttention = false;
+  assert.equal(terminalStatusIcon(record, { now: 10 * HOUR }), '🟫');
+});
+
 test('agent action states take precedence over idle age', () => {
   const old = { lastAgentActivityAt: 1 };
   assert.equal(terminalStatusIcon({ ...old, status: 'running' }, { now: 10 * HOUR }), '🟡');
   assert.equal(terminalStatusIcon({ ...old, status: 'waiting' }, { now: 10 * HOUR }), '🟠');
   assert.equal(terminalStatusIcon({ ...old, status: 'interrupted' }, { now: 10 * HOUR }), '🔴');
+});
+
+test('an interrupted turn stays red only until the user returns to it', () => {
+  const now = Date.UTC(2026, 6, 27, 12, 0, 0);
+  const interruptedAt = now - 3 * HOUR;
+  const record = {
+    status: 'interrupted',
+    interruptedAt,
+    lastAgentActivityAt: interruptedAt,
+    lastFocusedAt: interruptedAt - MINUTE,
+  };
+  assert.equal(interruptionReference(record), interruptedAt);
+  assert.equal(interruptionWasAcknowledged(record), false);
+  assert.equal(terminalStatusIcon(record, { now, recentMinutes: 30, oldHours: 4 }), '🔴');
+
+  record.lastFocusedAt = interruptedAt + MINUTE;
+  assert.equal(interruptionWasAcknowledged(record), true);
+  assert.equal(terminalStatusIcon(record, { now, recentMinutes: 30, oldHours: 4 }), '🟧');
+});
+
+test('legacy interrupted records use agent activity as their event timestamp', () => {
+  const record = {
+    status: 'interrupted',
+    lastAgentActivityAt: 100,
+    lastFocusedAt: 200,
+  };
+  assert.equal(interruptionReference(record), 100);
+  assert.equal(interruptionWasAcknowledged(record), true);
+  assert.notEqual(terminalStatusIcon(record, { now: 1000 }), '🔴');
 });
 
 test('detects a new completed turn even when polling only observes done to done', () => {

@@ -70,6 +70,8 @@ test('maps agent and acknowledged states to monitor tones', () => {
   assert.equal(statusTone('done', true), 'idle');
   assert.equal(statusLabel('done', false), 'READY');
   assert.equal(statusLabel('done', true), 'IDLE');
+  assert.equal(statusTone('idle', true, true), 'ready');
+  assert.equal(statusLabel('idle', true, true), 'READY');
 });
 
 test('finds the active pane process', () => {
@@ -92,12 +94,14 @@ test('webview HTML has a strict CSP and escapes workspace text', () => {
   assert.match(html, /style-src-attr 'unsafe-inline'/);
   assert.match(html, /script-src 'nonce-[A-Za-z0-9_-]+'/);
   assert.match(html, /&lt;unsafe &amp; workspace&gt;/);
+  assert.match(html, /--monitor-accent:/);
+  assert.match(html, /class="monitor-label">Session Monitor</);
   assert.doesNotMatch(html, /<unsafe & workspace>/);
   assert.match(html, /prefers-reduced-motion/);
   assert.match(html, /max-width: 480px/);
   assert.match(html, /font-size: 8\.75px/);
   assert.match(html, /min-height: 34px/);
-  assert.match(html, />Monitor<\/span>/);
+  assert.match(html, />Session Monitor<\/span>/);
   assert.match(html, /sessions\.length \+ '\/4'/);
   assert.match(html, /screen\.scrollTop = screen\.scrollHeight/);
   assert.match(html, /article\.addEventListener\('click'/);

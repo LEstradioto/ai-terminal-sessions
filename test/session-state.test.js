@@ -26,10 +26,16 @@ function record(title = 'First') {
     tmuxSession: 'vsc-demo-123abc',
     cwd: '/tmp/demo',
     manualTitle: title,
+    iconPreset: 'debug',
     lastTerminalActivityAt: 123,
     lastTerminalActivitySource: 'input',
+    interruptedAt: 100,
+    lastAcknowledgedInterruptedAt: 90,
+    manuallyNeedsAttention: true,
     windows: [{ panes: [{
       cwd: '/tmp/demo',
+      lastTerminalActivityAt: 120,
+      lastTerminalActivitySource: 'input',
       startCommand: 'secret --token value',
       agent: {
         type: 'codex',
@@ -47,9 +53,23 @@ test('state schema rejects incompatible payloads and removes volatile private fi
   const payload = statePayload('workspace', [record()], 3, 10);
   const pane = payload.records[0].windows[0].panes[0];
   assert.equal(pane.startCommand, undefined);
+  assert.equal(pane.lastTerminalActivityAt, 120);
+  assert.equal(pane.lastTerminalActivitySource, 'input');
   assert.equal(pane.agent.pid, undefined);
   assert.equal(pane.agent.transcript, undefined);
   assert.equal(payload.records[0].lastTerminalActivitySource, 'input');
+  assert.equal(payload.records[0].iconPreset, 'debug');
+  assert.equal(payload.records[0].iconMode, 'manual');
+  assert.equal(payload.records[0].interruptedAt, 100);
+  assert.equal(payload.records[0].lastAcknowledgedInterruptedAt, 90);
+  assert.equal(payload.records[0].manuallyNeedsAttention, true);
+});
+
+test('state falls back safely when an icon preset is unknown', () => {
+  const value = record();
+  value.iconPreset = 'user-supplied-icon';
+  assert.equal(statePayload('workspace', [value]).records[0].iconPreset, 'terminal');
+  assert.equal(statePayload('workspace', [value]).records[0].iconMode, 'auto');
 });
 
 test('state writes are serialized so the latest revision wins', async () => {

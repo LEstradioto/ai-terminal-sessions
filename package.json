@@ -2,7 +2,7 @@
   "name": "ai-terminal-sessions",
   "displayName": "AI Terminal Sessions",
   "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a floating monitor.",
-  "version": "0.4.6",
+  "version": "0.6.0",
   "publisher": "LEstradioto",
   "author": "Luan Estradioto",
   "license": "MIT",
@@ -41,9 +41,7 @@
     "draft recovery"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onTerminalProfile:aiTerminalSessions.profile",
-    "onWebviewPanel:aiTerminalSessions.monitor"
+    "*"
   ],
   "extensionKind": [
     "workspace"
@@ -100,6 +98,24 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "aiTerminalSessions.changeIcon",
+        "title": "Change Icon and Color",
+        "category": "AI Sessions",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "aiTerminalSessions.customizeActive",
+        "title": "Customize Active Tab...",
+        "category": "AI Sessions",
+        "icon": "$(paintcan)"
+      },
+      {
+        "command": "aiTerminalSessions.moreActions",
+        "title": "More Actions...",
+        "category": "AI Sessions",
+        "icon": "$(ellipsis)"
+      },
+      {
         "command": "aiTerminalSessions.diagnoseRenameAI",
         "title": "Diagnose AI Rename",
         "category": "AI Sessions"
@@ -109,6 +125,24 @@
         "title": "Recover Last Draft",
         "category": "AI Sessions",
         "icon": "$(history)"
+      },
+      {
+        "command": "aiTerminalSessions.paneActions",
+        "title": "Tmux Pane Actions",
+        "category": "AI Sessions",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "aiTerminalSessions.markHandled",
+        "title": "Mark as Handled",
+        "category": "AI Sessions",
+        "icon": "$(check)"
+      },
+      {
+        "command": "aiTerminalSessions.markNeedsAttention",
+        "title": "Mark as Needs Attention",
+        "category": "AI Sessions",
+        "icon": "$(circle-filled)"
       },
       {
         "command": "aiTerminalSessions.scrollPageUp",
@@ -151,7 +185,7 @@
       },
       {
         "command": "aiTerminalSessions.clearRecoveryData",
-        "title": "Clear Drafts and Session History",
+        "title": "Clear Recovery Data",
         "category": "AI Sessions",
         "icon": "$(clear-all)"
       },
@@ -162,6 +196,18 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "aiTerminalSessions.prepareWorkspaceMove",
+        "title": "Prepare Workspace Move",
+        "category": "AI Sessions",
+        "icon": "$(export)"
+      },
+      {
+        "command": "aiTerminalSessions.importWorkspaceMove",
+        "title": "Import Prepared Workspace Move",
+        "category": "AI Sessions",
+        "icon": "$(import)"
+      },
+      {
         "command": "aiTerminalSessions.makeDefault",
         "title": "Use as Default Terminal Profile",
         "category": "AI Sessions"
@@ -169,6 +215,11 @@
       {
         "command": "aiTerminalSessions.showLog",
         "title": "Show Log",
+        "category": "AI Sessions"
+      },
+      {
+        "command": "aiTerminalSessions.showSessionSwitcher",
+        "title": "Session Switcher",
         "category": "AI Sessions"
       }
     ],
@@ -185,9 +236,24 @@
           "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
+          "command": "aiTerminalSessions.changeIcon",
+          "group": "1_rename@3",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
           "command": "aiTerminalSessions.restoreDraft",
           "group": "2_recovery@1",
           "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.markHandled",
+          "group": "2_attention@1",
+          "when": "aiTerminalSessions.managedTerminalActive && aiTerminalSessions.activeAttentionEditable && aiTerminalSessions.activeNeedsAttention"
+        },
+        {
+          "command": "aiTerminalSessions.markNeedsAttention",
+          "group": "2_attention@1",
+          "when": "aiTerminalSessions.managedTerminalActive && aiTerminalSessions.activeAttentionEditable && !aiTerminalSessions.activeNeedsAttention"
         },
         {
           "command": "aiTerminalSessions.toggleMonitorPin",
@@ -195,9 +261,100 @@
           "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
+          "command": "aiTerminalSessions.paneActions",
+          "group": "4_tmux@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
           "command": "aiTerminalSessions.remove",
           "group": "9_kill@1",
           "when": "aiTerminalSessions.managedTerminalActive"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "aiTerminalSessions.attachExisting",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.rename",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.renameWithAI",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.changeIcon",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.diagnoseRenameAI",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.restoreDraft",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.paneActions",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.markHandled",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.markNeedsAttention",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.scrollPageUp",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.scrollPageDown",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.toggleMonitorPin",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.remove",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.restoreNow",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.clearRecoveryData",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.stopAll",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.prepareWorkspaceMove",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.importWorkspaceMove",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.makeDefault",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.showLog",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.showSessionSwitcher",
+          "when": "false"
         }
       ]
     },
@@ -231,6 +388,7 @@
         "aiTerminalSessions.restoreAgents": {
           "type": "boolean",
           "default": true,
+          "order": 20,
           "description": "After a cold boot, resume Claude Code and Codex by their saved session ID."
         },
         "aiTerminalSessions.defaultLocation": {
@@ -240,6 +398,7 @@
             "panel"
           ],
           "default": "editor",
+          "order": 10,
           "description": "Where new persistent terminals are created."
         },
         "aiTerminalSessions.renameProvider": {
@@ -255,21 +414,25 @@
             "Do not call an AI model; generate a deterministic local title."
           ],
           "default": "sameHarness",
+          "order": 70,
           "description": "Provider used only when Rename with AI is explicitly invoked."
         },
         "aiTerminalSessions.draftRecovery": {
           "type": "boolean",
           "default": true,
+          "order": 40,
           "description": "Locally save the latest non-empty agent composer text for recovery after deletion, reload, or crash."
         },
         "aiTerminalSessions.monitorAlwaysOnTop": {
           "type": "boolean",
           "default": true,
+          "order": 60,
           "description": "Keep the floating Session Monitor above other windows when supported."
         },
         "aiTerminalSessions.notifyWhenReady": {
           "type": "boolean",
           "default": false,
+          "order": 50,
           "description": "Show a system notification when an agent finishes outside the active tab."
         },
         "aiTerminalSessions.closeBehavior": {
@@ -285,6 +448,7 @@
             "Keep the saved session and restore its tab later."
           ],
           "default": "kill",
+          "order": 30,
           "description": "Behavior after explicitly closing a tab with the X button or shortcut. A clean shell exit always removes the saved tab."
         },
         "aiTerminalSessions.executables": {
@@ -310,6 +474,7 @@
               "description": "Claude CLI executable name or absolute path."
             }
           },
+          "order": 80,
           "description": "Executable names or absolute paths. The defaults resolve through PATH."
         }
       }

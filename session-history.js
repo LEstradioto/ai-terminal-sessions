@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { normalizeIconMode, normalizeIconPreset } = require('./terminal-icons');
+const { normalizePaneRole, normalizeRestorePolicy } = require('./pane-model');
 
 const HISTORY_VERSION = 1;
 const DEFAULT_MAX_SNAPSHOTS = 20;
@@ -12,6 +14,13 @@ function restorableAgent(agent) {
     type: String(agent.type),
     sessionId: String(agent.sessionId),
     active: Boolean(agent.active),
+    status: String(agent.status || 'idle'),
+    lastActivityAt: Number(agent.lastActivityAt) || 0,
+    readyAt: Number(agent.readyAt) || 0,
+    lastAcknowledgedReadyAt: Number(agent.lastAcknowledgedReadyAt) || 0,
+    manuallyNeedsAttention: Boolean(agent.manuallyNeedsAttention),
+    interruptedAt: Number(agent.interruptedAt) || 0,
+    lastAcknowledgedInterruptedAt: Number(agent.lastAcknowledgedInterruptedAt) || 0,
   };
 }
 
@@ -21,13 +30,21 @@ function restorableWindows(windows) {
     index: Number(window.index) || 0,
     name: String(window.name || 'shell'),
     active: Boolean(window.active),
+    layout: String(window.layout || '').slice(0, 2000),
     panes: Array.isArray(window.panes) ? window.panes.map((pane) => {
       const agent = restorableAgent(pane.agent);
       return {
+        logicalId: String(pane.logicalId || ''),
         index: Number(pane.index) || 0,
         cwd: String(pane.cwd || ''),
         process: String(pane.process || ''),
         active: Boolean(pane.active),
+        lastTerminalActivityAt: Number(pane.lastTerminalActivityAt) || 0,
+        lastTerminalActivitySource: ['input', 'output'].includes(pane.lastTerminalActivitySource)
+          ? pane.lastTerminalActivitySource
+          : undefined,
+        role: normalizePaneRole(pane.role, Boolean(agent)),
+        restorePolicy: normalizeRestorePolicy(pane.restorePolicy, Boolean(agent)),
         ...(agent && { agent }),
       };
     }) : [],
@@ -43,11 +60,14 @@ function restorableRecord(record) {
     owned: record.owned !== false,
     autoTitle: String(record.autoTitle || ''),
     manualTitle: String(record.manualTitle || ''),
+    iconPreset: normalizeIconPreset(record.iconPreset),
+    iconMode: normalizeIconMode(record.iconMode, record.iconPreset),
     monitorPinned: Boolean(record.monitorPinned),
     monitorPinnedAt: Number(record.monitorPinnedAt) || 0,
     createdAt: Number(record.createdAt) || 0,
     updatedAt: Number(record.updatedAt) || 0,
     lastFocusedAt: Number(record.lastFocusedAt) || 0,
+    activePaneId: String(record.activePaneId || ''),
     tabOrder: Number.isFinite(record.tabOrder) ? record.tabOrder : undefined,
     windows: restorableWindows(record.windows),
   };

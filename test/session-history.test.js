@@ -16,6 +16,7 @@ function record(id, tabOrder, title = id) {
     tmuxSession: `tmux-${id}`,
     cwd: '/tmp/project',
     manualTitle: title,
+    iconPreset: 'server',
     createdAt: tabOrder + 1,
     tabOrder,
     status: 'running',
@@ -27,6 +28,8 @@ function record(id, tabOrder, title = id) {
         index: 0,
         cwd: '/tmp/project',
         active: true,
+        lastTerminalActivityAt: 123,
+        lastTerminalActivitySource: 'output',
         agent: { type: 'codex', sessionId: 'session-id', active: true, pid: 999 },
       }],
     }],
@@ -37,8 +40,12 @@ test('snapshot preserves restore metadata and visual order but drops volatile pr
   const records = snapshotRecords([record('right', 1), record('left', 0)]);
   assert.deepEqual(records.map((item) => item.id), ['left', 'right']);
   assert.equal(records[0].manualTitle, 'left');
+  assert.equal(records[0].iconPreset, 'server');
+  assert.equal(records[0].iconMode, 'manual');
   assert.equal(records[0].windows[0].panes[0].agent.sessionId, 'session-id');
   assert.equal(records[0].windows[0].panes[0].agent.pid, undefined);
+  assert.equal(records[0].windows[0].panes[0].lastTerminalActivityAt, 123);
+  assert.equal(records[0].windows[0].panes[0].lastTerminalActivitySource, 'output');
   assert.equal(records[0].status, undefined);
 });
 

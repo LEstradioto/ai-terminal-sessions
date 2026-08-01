@@ -11,9 +11,9 @@ function hasMeaningfulTerminalOutput(data) {
 function hasAgentContext(record) {
   if (!record) return false;
   if (record.activeAgent && record.activeAgent.type) return true;
-  return (record.windows || []).some((window) => (window.panes || []).some((pane) => (
-    pane.agent && pane.agent.active !== false
-  )));
+  const window = (record.windows || []).find((item) => item.active) || (record.windows || [])[0];
+  const pane = window && ((window.panes || []).find((item) => item.active) || window.panes[0]);
+  return Boolean(pane && pane.agent && pane.agent.active !== false);
 }
 
 function effectiveTerminalActivityAt(record) {

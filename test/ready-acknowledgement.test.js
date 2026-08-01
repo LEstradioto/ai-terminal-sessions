@@ -15,19 +15,37 @@ test('an active terminal is not auto-acknowledged in the same scan that becomes 
   assert.doesNotMatch(scanRecord, /acknowledgeReady\(record\)/);
 });
 
-test('the first actual terminal interaction acknowledges a ready response', () => {
+test('only a submitted terminal message acknowledges pending attention', () => {
   const start = source.indexOf('  handleInput(data) {');
   const end = source.indexOf('\n  setDimensions(', start);
   const handleInput = source.slice(start, end);
-  assert.match(handleInput, /acknowledgeReady\(this\.record\)/);
-  assert.match(handleInput, /schedulePersist\(\)/);
+  const submitted = handleInput.indexOf('if (input.submitted)');
+  const acknowledge = handleInput.indexOf('acknowledgeSubmittedInput(this.record)');
+  assert.ok(submitted >= 0);
+  assert.ok(acknowledge > submitted);
+  const acknowledgeStart = source.indexOf('  async acknowledgeSubmittedInput(record)');
+  const acknowledgeEnd = source.indexOf('\n  refreshPtyName(', acknowledgeStart);
+  const acknowledgeSubmitted = source.slice(acknowledgeStart, acknowledgeEnd);
+  assert.match(acknowledgeSubmitted, /acknowledgeAttention\(record, pane\)/);
+  assert.match(acknowledgeSubmitted, /noteTerminalActivity\(record, 'input', true, pane\)/);
 });
 
-test('restore-driven focus changes do not acknowledge or rejuvenate sessions', () => {
+test('focus changes acknowledge interruptions but not completed answers', () => {
   const start = source.indexOf('vscode.window.onDidChangeActiveTerminal');
   const end = source.indexOf('\n    }));', start);
   const listener = source.slice(start, end);
   assert.match(listener, /if \(!record \|\| this\.restoringTabs\) return/);
   assert.ok(listener.indexOf('this.restoringTabs') < listener.indexOf('record.lastFocusedAt'));
-  assert.ok(listener.indexOf('this.restoringTabs') < listener.indexOf('this.acknowledgeReady(record)'));
+  assert.match(listener, /acknowledgeInterrupted\(record\)/);
+  assert.doesNotMatch(listener, /acknowledgeAttention\(record\)/);
+});
+
+test('a repeated interrupted transcript event becomes idle after acknowledgement', () => {
+  const paneModel = fs.readFileSync(path.join(__dirname, '..', 'pane-model.js'), 'utf8');
+  const start = paneModel.indexOf('function mergeObservedAgent(');
+  const end = paneModel.indexOf('\nfunction agentNeedsAttention(', start);
+  const merge = paneModel.slice(start, end);
+  assert.match(merge, /interruptionAcknowledged/);
+  assert.match(merge, /observed\.status === 'interrupted'/);
+  assert.match(merge, /\? 'idle'/);
 });

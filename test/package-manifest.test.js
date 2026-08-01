@@ -4,6 +4,10 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const manifest = require('../package.json');
 
+test('activates eagerly so managed tabs can restore during workbench startup', () => {
+  assert.deepEqual(manifest.activationEvents, ['*']);
+});
+
 const PUBLIC_SETTINGS = [
   'aiTerminalSessions.restoreAgents',
   'aiTerminalSessions.defaultLocation',
@@ -18,11 +22,43 @@ const PUBLIC_SETTINGS = [
 test('keeps the public configuration focused on workflow decisions', () => {
   const settings = manifest.contributes.configuration.properties;
   assert.deepEqual(Object.keys(settings), PUBLIC_SETTINGS);
+  assert.equal(new Set(Object.values(settings).map((setting) => setting.order)).size, PUBLIC_SETTINGS.length);
   assert.deepEqual(settings['aiTerminalSessions.executables'].default, {
     tmux: 'tmux',
     codex: 'codex',
     claude: 'claude',
   });
+});
+
+test('keeps the Command Palette focused and exposes fast AI rename', () => {
+  const hidden = new Set(manifest.contributes.menus.commandPalette
+    .filter((item) => item.when === 'false')
+    .map((item) => item.command));
+  const visible = manifest.contributes.commands
+    .map((item) => item.command)
+    .filter((command) => !hidden.has(command));
+  assert.deepEqual(visible, [
+    'aiTerminalSessions.new',
+    'aiTerminalSessions.renameWithAI',
+    'aiTerminalSessions.customizeActive',
+    'aiTerminalSessions.moreActions',
+    'aiTerminalSessions.toggleMonitor',
+    'aiTerminalSessions.showSessionHistory',
+  ]);
+});
+
+test('keeps attention controls contextual and out of the Command Palette', () => {
+  const contextMenu = manifest.contributes.menus['terminal/context'];
+  const handled = contextMenu.find((item) => item.command === 'aiTerminalSessions.markHandled');
+  const needed = contextMenu.find((item) => item.command === 'aiTerminalSessions.markNeedsAttention');
+  assert.match(handled.when, /activeNeedsAttention/);
+  assert.match(needed.when, /!aiTerminalSessions\.activeNeedsAttention/);
+
+  const hidden = manifest.contributes.menus.commandPalette
+    .filter((item) => item.when === 'false')
+    .map((item) => item.command);
+  assert.ok(hidden.includes('aiTerminalSessions.markHandled'));
+  assert.ok(hidden.includes('aiTerminalSessions.markNeedsAttention'));
 });
 
 test('binds keyboard paging only inside managed terminals', () => {

@@ -17,9 +17,13 @@ function terminalStatusIcon(record, options = {}) {
   const now = finiteNumber(options.now, Date.now());
   const status = record && record.status;
 
-  if (status === 'running' || status === 'waiting' || status === 'interrupted' || status === 'error') {
+  if (status === 'running' || status === 'waiting' || status === 'error') {
     return STATUS_ICON[status];
   }
+  if (status === 'interrupted' && !interruptionWasAcknowledged(record)) {
+    return STATUS_ICON.interrupted;
+  }
+  if (record && record.manuallyNeedsAttention) return STATUS_ICON.done;
   if (status === 'done' && !readyWasAcknowledged(record)) return STATUS_ICON.done;
 
   const recentMinutes = Math.max(1, finiteNumber(options.recentMinutes, 30));
@@ -30,6 +34,20 @@ function terminalStatusIcon(record, options = {}) {
   if (ageMs < recentMinutes * 60 * 1000) return STATUS_ICON.idleRecent;
   if (ageMs < oldHours * 60 * 60 * 1000) return STATUS_ICON.idleCooling;
   return STATUS_ICON.idleOld;
+}
+
+function interruptionReference(record) {
+  return finiteNumber(record && record.interruptedAt,
+    finiteNumber(record && record.lastAgentActivityAt, 0));
+}
+
+function interruptionWasAcknowledged(record) {
+  const interruptedAt = interruptionReference(record);
+  if (!interruptedAt) return false;
+  return Math.max(
+    finiteNumber(record && record.lastAcknowledgedInterruptedAt, 0),
+    finiteNumber(record && record.lastFocusedAt, 0),
+  ) >= interruptedAt;
 }
 
 function isNewReadyEvent(record, agent) {
@@ -63,6 +81,8 @@ function finiteNumber(value, fallback) {
 module.exports = {
   STATUS_ICON,
   activityReference,
+  interruptionReference,
+  interruptionWasAcknowledged,
   isNewReadyEvent,
   readyWasAcknowledged,
   terminalStatusIcon,

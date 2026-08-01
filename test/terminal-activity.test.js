@@ -40,6 +40,19 @@ test('explicit shell input remains semantic activity after an agent exits', () =
   assert.equal(effectiveTerminalActivityAt(record), 100);
 });
 
+test('a focused helper pane uses terminal activity with an agent in the background', () => {
+  const record = {
+    windows: [{ active: true, panes: [
+      { active: true, role: 'server' },
+      { active: false, agent: { type: 'codex', active: true } },
+    ] }],
+    lastTerminalActivityAt: 100,
+    lastTerminalActivitySource: 'input',
+  };
+  assert.equal(hasAgentContext(record), false);
+  assert.equal(effectiveTerminalActivityAt(record), 100);
+});
+
 test('repairs a legacy burst shared by restored PTYs but preserves isolated activity', () => {
   const records = [
     { id: 'one', lastTerminalActivityAt: 10_000 },

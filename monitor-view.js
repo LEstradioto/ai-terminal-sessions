@@ -34,6 +34,7 @@ function monitorHtml(webview, workspaceName) {
       --ready: var(--vscode-terminal-ansiGreen, #73c991);
       --error: var(--vscode-terminal-ansiRed, #f14c4c);
       --idle: var(--vscode-descriptionForeground, #8b8b8b);
+      --monitor-accent: var(--vscode-terminal-ansiCyan, #4fa8b8);
       --ansi-0: var(--vscode-terminal-ansiBlack, #000000);
       --ansi-1: var(--vscode-terminal-ansiRed, #cd3131);
       --ansi-2: var(--vscode-terminal-ansiGreen, #0dbc79);
@@ -78,8 +79,11 @@ function monitorHtml(webview, workspaceName) {
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      min-height: 17px;
-      margin-bottom: 6px;
+      min-height: 22px;
+      margin: -7px -7px 6px;
+      padding: 0 7px;
+      border-bottom: 1px solid color-mix(in srgb, var(--monitor-accent) 34%, var(--border));
+      background: color-mix(in srgb, var(--monitor-accent) 11%, var(--panel));
       color: var(--muted);
       font-family: var(--mono);
       font-size: 8.5px;
@@ -96,14 +100,26 @@ function monitorHtml(webview, workspaceName) {
       min-width: 0;
     }
 
-    .pulse {
+    .monitor-mark {
+      position: relative;
       flex: 0 0 auto;
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--ready);
-      box-shadow: 0 0 0 2px color-mix(in srgb, var(--ready) 14%, transparent);
+      width: 8px;
+      height: 8px;
+      border: 1px solid var(--monitor-accent);
+      border-radius: 2px;
+      box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--monitor-accent) 10%, transparent);
     }
+
+    .monitor-mark::after {
+      position: absolute;
+      inset: 2px;
+      border-radius: 1px;
+      background: var(--monitor-accent);
+      content: "";
+    }
+
+    .monitor-label { color: var(--text); font-weight: 700; }
+    .counter { color: color-mix(in srgb, var(--monitor-accent) 72%, var(--text)); }
 
     .workspace {
       overflow: hidden;
@@ -290,6 +306,7 @@ function monitorHtml(webview, workspaceName) {
 
     @media (max-width: 480px) {
       .shell { padding: 6px; }
+      .masthead { margin: -6px -6px 6px; padding: 0 6px; }
       .grid { grid-template-columns: 1fr; }
       .screen { min-height: 90px; max-height: 150px; }
       .workspace { display: none; }
@@ -303,7 +320,7 @@ function monitorHtml(webview, workspaceName) {
 <body>
   <div class="shell">
     <header class="masthead">
-      <div class="identity"><span class="pulse" aria-hidden="true"></span><span>Monitor</span><span class="workspace">· ${workspace}</span></div>
+      <div class="identity"><span class="monitor-mark" aria-hidden="true"></span><span class="monitor-label">Session Monitor</span><span class="workspace">· ${workspace}</span></div>
       <div class="counter"><span id="updated">LIVE</span><span id="count">0/4</span></div>
     </header>
     <main id="grid" class="grid" aria-live="polite"></main>

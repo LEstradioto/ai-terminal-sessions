@@ -2,6 +2,79 @@
 
 All notable changes to AI Terminal Sessions are documented here.
 
+## 0.6.0
+
+- Changed the Session Monitor toggle to hide and reuse its auxiliary window, preserving the user's size and position.
+- Restored Rename with AI as a fast Command Palette action for the active managed tab.
+- Kept tmux mouse selections visible and copied them directly to the macOS clipboard.
+- Added `v`, arrow keys, and `y` as a simple keyboard selection flow in tmux copy mode.
+- Added multiple panes per tab with the standard `Ctrl+B` tmux prefix and a contextual pane actions menu.
+- Tracked agent status, attention acknowledgement, roles, focus, and drafts independently per pane.
+- Restored saved pane layouts and resumed Codex or Claude agents independently after a cold boot.
+- Kept the tab marker tied to the focused pane while counting background pane work and attention in the status bar.
+- Added a safe prepare and import workflow for moving a workspace to another folder or disk.
+- Left right-click to VS Code instead of opening both the VS Code and tmux menus.
+
+## 0.5.6
+
+- Kept a completed answer green until the user submits the next terminal message, regardless of tab focus or draft editing.
+- Added contextual actions to mark a session as handled or manually flag it for attention.
+
+## 0.5.5
+
+- Refreshed Codex session identity while a process stays alive so compacted conversations keep reporting their current working and ready states.
+- Chose the newest open parent transcript when the Codex log database is unavailable.
+
+## 0.5.4
+
+- Activated during workbench startup instead of waiting for every eager extension to finish.
+- Restored tabs in the background without blocking VS Code startup.
+- Collapsed per-session tmux setup into one client invocation to reduce restore overhead.
+
+## 0.5.3
+
+- Increased new managed terminal scrollback from the tmux default of 2,000 lines to 20,000 lines.
+- Documented the physical `Shift+Fn+Up/Down` paging shortcut for MacBook keyboards.
+
+## 0.5.2
+
+- Preserved the floating Session Monitor's native size and position across window reloads.
+- Kept a healthy monitor in place during manual tab restore instead of rebuilding its auxiliary window.
+- Added a compact cyan identity bar without changing terminal ANSI colors.
+
+## 0.5.1
+
+- Recovered Codex session identity from transcripts still opened by the process when Codex rotates its local log database.
+- Stopped treating an unidentified Codex or Claude process as permanently working.
+- Fixed old completed sessions showing a working marker for days.
+
+## 0.5.0
+
+- Added a status bar counter for total sessions, working agents, and sessions needing attention.
+- Added a fast session switcher grouped by attention, working, recent, and older activity.
+- Added restore health checks that warn when saved sessions, live terminal connections, and visible tabs disagree after reload.
+
+## 0.4.9
+
+- Treated Codex and Claude interruptions as acknowledgement-based attention events instead of permanent errors.
+- Cleared a red interrupted marker after the user returns to or interacts with its tab.
+- Prevented an old `turn_aborted` transcript event from reactivating the red marker on every poll.
+- Migrated existing stuck interruptions using their saved agent activity and real tab-focus timestamps.
+
+## 0.4.8
+
+- Made tab icons automatic by default for Codex, Claude Code, Rails servers, and regular shells.
+- Added dedicated Codex, Claude Code, and Rails presets using built-in VS Code icons and theme colors.
+- Kept manual icon choices locked per tab and added an Automatic option to resume process detection.
+- Limited live icon reconnection to the active tab so background sessions never steal focus.
+
+## 0.4.7
+
+- Added eight colored tab icon presets for terminal, agent, code, server, deploy, database, test, and debug sessions.
+- Persisted each icon choice across reloads, snapshots, and closed-session history.
+- Reduced the Command Palette to five clear entry points while keeping contextual actions available through two focused menus.
+- Ordered the eight existing settings by workflow importance without adding new configuration.
+
 ## 0.4.6
 
 - Added an individual closed-session archive with one-tab restore for Codex, Claude Code, and generic terminals.

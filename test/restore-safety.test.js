@@ -28,6 +28,47 @@ test('restore targets the main window and recovers stranded auxiliary editors', 
   assert.ok(restoreTabs.indexOf('await this.ensureSession(record)') < restoreTabs.indexOf('this.openRecord(record, true)'));
 });
 
+test('serialized monitor keeps its native auxiliary window bounds', () => {
+  const serializerStart = source.indexOf('registerWebviewPanelSerializer(MONITOR_VIEW_TYPE');
+  const serializerEnd = source.indexOf('vscode.window.onDidOpenTerminal', serializerStart);
+  const restoreStart = source.indexOf('  async restoreSerializedMonitor(');
+  const restoreEnd = source.indexOf('\n  async loadState()', restoreStart);
+  assert.notEqual(serializerStart, -1);
+  assert.notEqual(serializerEnd, -1);
+  assert.notEqual(restoreStart, -1);
+  assert.notEqual(restoreEnd, -1);
+
+  const serializer = source.slice(serializerStart, serializerEnd);
+  const restore = source.slice(restoreStart, restoreEnd);
+  assert.match(serializer, /this\.restoreSerializedMonitor\(panel\)/);
+  assert.doesNotMatch(serializer, /panel\.dispose\(\)/);
+  assert.match(restore, /this\.attachMonitorPanel\(panel\)/);
+  assert.match(restore, /this\.workbench\.switchToMainWindow\(\)/);
+});
+
+test('healthy manual restore leaves a floating monitor in place', () => {
+  const start = source.indexOf('  async restoreTabsImpl(');
+  const end = source.indexOf('\n  async showSessionHistory(', start);
+  const restore = source.slice(start, end);
+  assert.match(restore, /!this\.monitorPanel \|\| this\.hasSuspiciousTerminalEditors\(\)/);
+  assert.match(restore, /if \(recoverAuxiliaryEditors\)/);
+  assert.match(restore, /kept healthy monitor window in place with saved bounds/);
+});
+
+test('monitor toggle preserves the auxiliary window instead of disposing it', () => {
+  const toggleStart = source.indexOf('  async toggleMonitor()');
+  const toggleEnd = source.indexOf('\n  async openMonitor()', toggleStart);
+  const toggle = source.slice(toggleStart, toggleEnd);
+  assert.match(toggle, /this\.monitorHidden \? this\.showMonitor\(\) : this\.hideMonitor\(\)/);
+  assert.doesNotMatch(toggle, /this\.monitorPanel\.dispose\(\)/);
+
+  const hideStart = source.indexOf('  async hideMonitor()');
+  const hideEnd = source.indexOf('\n  async showMonitor()', hideStart);
+  const hide = source.slice(hideStart, hideEnd);
+  assert.match(hide, /this\.workbench\.hidePanel\(panel\)/);
+  assert.match(hide, /this\.setMonitorHidden\(true\)/);
+});
+
 test('terminal replacement is safe when the close event arrives late', () => {
   const disposeStart = source.indexOf('  disposeManagedTerminal(');
   const closeStart = source.indexOf('  async handleCloseTerminal(', disposeStart);
@@ -44,6 +85,31 @@ test('terminal replacement is safe when the close event arrives late', () => {
   assert.match(close, /this\.terminals\.get\(record\.id\) === terminal/);
   assert.match(close, /this\.ptys\.get\(record\.id\) === pty/);
   assert.match(close, /pendingCloseActions\.get\(terminal\)/);
+});
+
+test('changing an icon replaces only the terminal bridge and replays its pane', () => {
+  const start = source.indexOf('  async reopenTerminalAppearance(record)');
+  const end = source.indexOf('\n  async renameActiveWithAI()', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const appearance = source.slice(start, end);
+  assert.match(appearance, /this\.disposeManagedTerminal\(record, terminal, 'keep'\)/);
+  assert.match(appearance, /await this\.ensureSession\(record\)/);
+  assert.match(appearance, /this\.openRecord\(record, true\)/);
+  assert.match(appearance, /waitFor\(\(\) => pty\.bridgeReady\(\), 1800, 25\)/);
+  assert.match(appearance, /await pty\.replayVisiblePane\(\)/);
+});
+
+test('automatic icons refresh only for the active terminal after startup', () => {
+  const start = source.indexOf('  async ensureAutomaticTerminalAppearance(record)');
+  const end = source.indexOf('\n  async reopenTerminalAppearance(record)', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const automatic = source.slice(start, end);
+  assert.match(automatic, /!this\.started \|\| this\.restoringTabs/);
+  assert.match(automatic, /active\.id !== record\.id/);
+  assert.match(automatic, /pty\.iconPreset === normalizeIconPreset\(record\.iconPreset\)/);
+  assert.match(automatic, /this\.appearanceRefreshes/);
 });
 
 test('manual restore recovers live tmux sessions from the latest saved snapshot', () => {
@@ -66,10 +132,55 @@ test('manual restore recovers live tmux sessions from the latest saved snapshot'
 
 test('private tmux sessions handle mouse wheel scrolling', () => {
   const start = source.indexOf('  async configureTmuxSession(');
-  const end = source.indexOf('\n  async resizeSession(', start);
+  const end = source.indexOf('\n  async configurePanePresentation(', start);
   const configure = source.slice(start, end);
   assert.match(configure, /'mouse', 'on'/);
   assert.doesNotMatch(configure, /'mouse', 'off'/);
+});
+
+test('tmux copy mode keeps mouse selection visible and copies it on macOS', () => {
+  const start = source.indexOf('  async configureTmuxSession(');
+  const end = source.indexOf('\n  async configurePanePresentation(', start);
+  const configure = source.slice(start, end);
+  assert.match(configure, /'copy-command', '\/usr\/bin\/pbcopy'/);
+  assert.match(configure, /'MouseDragEnd1Pane',[\s\S]*?'copy-pipe-no-clear'/);
+  assert.match(configure, /'copy-mode', 'v', 'send-keys', '-X', 'begin-selection'/);
+  assert.match(configure, /'copy-mode', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel'/);
+});
+
+test('new tmux panes receive a larger scrollback history before creation', () => {
+  assert.match(source, /const DEFAULT_TMUX_HISTORY_LIMIT = 20000;/);
+  const restoreStart = source.indexOf('  async restoreTmuxSession(');
+  const restoreEnd = source.indexOf('\n  restoreCommand(', restoreStart);
+  const restore = source.slice(restoreStart, restoreEnd);
+  assert.ok(
+    restore.indexOf("'set-option', '-g', 'history-limit'")
+      < restore.indexOf("'new-session', '-d'"),
+  );
+});
+
+test('cold restore rebuilds every saved pane, layout, and focused pane', () => {
+  const start = source.indexOf('  async restoreTmuxSession(');
+  const end = source.indexOf('\n  restoredPaneRuntime(', start);
+  const restore = source.slice(start, end);
+  assert.match(restore, /const savedPanes = \[\.\.\.savedWindow\.panes\]/);
+  assert.match(restore, /for \(const pane of savedPanes\.slice\(1\)\)/);
+  assert.match(restore, /'split-window', '-d', '-P', '-F', '#\{pane_id\}'/);
+  assert.match(restore, /this\.restoreCommand\(pane\.agent\)/);
+  assert.match(restore, /'select-layout'/);
+  assert.match(restore, /'select-pane', '-t', activePane\.id/);
+  assert.match(restore, /record\.activePaneId = activePane\.logicalId/);
+});
+
+test('configures each tmux session with one client invocation', () => {
+  const configureStart = source.indexOf('  async configureTmuxSession(');
+  const configureEnd = source.indexOf('\n  async configurePanePresentation(', configureStart);
+  const configure = source.slice(configureStart, configureEnd);
+  assert.equal((configure.match(/await this\.runTmux\(/g) || []).length, 1);
+  assert.match(configure, /'terminal-features\[100\]'/);
+  assert.match(configure, /'automatic-rename', 'off'/);
+  assert.match(configure, /'prefix', 'C-b'/);
+  assert.match(configure, /'MouseDown3Pane'/);
 });
 
 test('managed terminals expose keyboard paging through tmux copy mode', () => {
@@ -107,6 +218,23 @@ test('explicit close archives the session before tmux termination', () => {
   const close = source.slice(start, end);
   assert.ok(close.indexOf('await this.archiveSession(record, action)')
     < close.indexOf('await this.killTmuxSession(record.tmuxSession)'));
+});
+
+test('workspace relocation suspends restore state only after every tmux session stops', () => {
+  const prepareStart = source.indexOf('  async prepareWorkspaceMove()');
+  const prepareEnd = source.indexOf('\n  async importWorkspaceMove()', prepareStart);
+  const prepare = source.slice(prepareStart, prepareEnd);
+  assert.ok(prepare.indexOf('await this.writeRelocationBundle(bundle)')
+    < prepare.indexOf('await this.killTmuxSession(record.tmuxSession)'));
+  assert.ok(prepare.indexOf('if (failures.length)') < prepare.indexOf('this.records.clear()'));
+  assert.doesNotMatch(prepare, /this\.drafts\.clear\(\)/);
+  assert.doesNotMatch(prepare, /this\.sessionHistory = \[\]/);
+
+  const importStart = source.indexOf('  async importWorkspaceMove()');
+  const importEnd = source.indexOf('\n  async writeRelocationBundle(', importStart);
+  const imported = source.slice(importStart, importEnd);
+  assert.ok(imported.indexOf('await this.restoreTabs(true)')
+    < imported.indexOf('fs.promises.unlink(picked.file)'));
 });
 
 test('restored terminals replay a pane snapshot after the live bridge attaches', () => {
