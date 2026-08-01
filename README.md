@@ -1,39 +1,51 @@
 # AI Terminal Sessions
 
-Agent workflows don't need another dashboard. Sometimes all you need is tabs. Trust me.
+Agent workflows don't need another dashboard. Sometimes all you need is tabs.
 
-I keep Codex, Claude Code, servers, and CI jobs open in VS Code and move through them like browser tabs. This extension keeps those tabs alive and tells me which one needs attention.
+I built this for the way I already use VS Code: Codex, Claude Code, servers, and CI jobs open side by side, with fast keyboard navigation and no lost context after a reload.
 
 [![VS Code 1.127+](https://img.shields.io/badge/VS%20Code-1.127%2B-23a8f2)](https://code.visualstudio.com/)
-[![macOS preview](https://img.shields.io/badge/platform-macOS-111827)](#limits)
+[![macOS preview](https://img.shields.io/badge/platform-macOS-111827)](#tested-setup)
 [![MIT](https://img.shields.io/badge/license-MIT-34d399)](LICENSE)
 
-![Persistent agent, server, and CI terminals arranged as ordinary VS Code tabs](media/tabs.png)
+[![Persistent AI sessions running in ordinary VS Code tabs](media/tabs.png)](media/ai-terminal-sessions-demo.mp4)
 
-## My workflow
+[Watch the 45-second demo](media/ai-terminal-sessions-demo.mp4)
 
-- `Hyper+Left/Right` moves through terminal tabs.
-- The title marker tells me when an agent needs me.
-- `Hyper+Down` pins a server or CI watch in the Session Monitor.
-- Reloading VS Code restores the same tabs, in the same order, with the same processes.
-
-![Pinning sessions while continuing to navigate terminal tabs](media/session-monitor.gif)
-
-## Features
+## What it does
 
 | Feature | Behavior |
 |---|---|
 | Persistent tabs | Each VS Code tab owns a private tmux session with one or more panes |
-| Cold restore | Every saved Codex and Claude pane resumes independently; helper panes return as shells without rerunning commands |
-| Status | The tab follows the focused pane; the status bar also counts background agents that are working or need attention |
-| Session counter | Shows saved, working, and attention counts; warns when visible tabs do not match restore state |
-| Session Monitor | Up to four ANSI-colored, auto-scrolling previews in a compact 2x2 window that keeps its bounds across reloads and extension toggles |
-| Draft recovery | Saves each pane's visible composer after 1.5 seconds and pastes it back without submitting; `Shift+Enter` and multiline paste still work |
-| History | Keeps up to 500 closed tabs, including their pane layout, with one-tab restore and a local message preview |
-| Rename with AI | Uses the latest two useful messages to make a lowercase topic such as `video ads` or `auth solving` |
-| Tab icons | Automatically distinguishes Codex, Claude Code, Rails servers, and regular shells; manual colored roles remain available |
-| Resize | Forwards VS Code dimensions to tmux and preserves the pane layout |
-| Scrollback | Keeps 20,000 lines in every new managed terminal |
+| Cold restore | Codex and Claude panes resume independently; helper panes return as shells without rerunning commands |
+| Agent status | Tabs show working, permission, ready, interrupted, and idle states |
+| Session counter | Shows saved, working, and attention counts, and catches restore mismatches |
+| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in a compact floating window |
+| Draft recovery | Saves the visible composer after 1.5 seconds and restores it without submitting |
+| Session history | Keeps up to 500 closed tabs with one-tab restore and a local message preview |
+| Contextual rename | Uses the latest two useful messages to make a short lowercase topic |
+| Automatic icons | Distinguishes Codex, Claude Code, Rails servers, and regular shells |
+| Pane support | Keeps one main agent per tab while allowing servers, logs, tests, or other helpers beside it |
+
+![A compact Session Monitor pinned over the main VS Code window](media/session-monitor.gif)
+
+## Daily workflow
+
+1. Open a persistent terminal and start Codex, Claude Code, a server, or a watch command.
+2. Move through sessions like browser tabs.
+3. Read the tab marker to see which agent is working or waiting for you.
+4. Pin long-running output to the Session Monitor when you want it in view.
+5. Reload VS Code whenever you need to. The tabs, order, panes, processes, names, and drafts return.
+
+The Command Palette stays focused on five entry points:
+
+- **New Persistent Terminal**
+- **Session History**
+- **Customize Active Tab...**
+- **Show or Hide Session Monitor**
+- **More Actions...**
+
+Right-click a managed tab for rename, icon, draft, pane, pin, and attention actions. **Rename with AI** also remains directly available in the Command Palette.
 
 ## Status markers
 
@@ -42,31 +54,18 @@ I keep Codex, Claude Code, servers, and CI jobs open in VS Code and move through
 | `○⠋` | Agent working |
 | `🟠` | Waiting for permission or a tool |
 | `🟢` | New answer ready |
-| `🔴` | New interrupted turn; clears after you return to the tab |
+| `🔴` | Interrupted turn that still needs review |
 | `🟨` | Idle for less than 30 minutes |
 | `🟧` | Idle for 30 minutes to 4 hours |
 | `🟫` | Idle for more than 4 hours |
 
-Green stays green until you submit the next message or explicitly mark the session as handled. Focusing the tab and editing a draft do not clear it. You can also right-click a managed tab to mark it as handled or flag it for attention. After a session is handled, the idle colors age from yellow to brown based on real agent, command, or terminal activity.
+Green stays green until you send the next message or mark the session as handled. Focusing a tab or editing a draft does not clear it.
 
 ## Install
 
-This is a macOS preview. It needs VS Code 1.127 or newer and tmux 3.4 or newer. Building from source also needs Node.js 20.
+This is a macOS preview. It needs VS Code 1.127 or newer, tmux 3.4 or newer, and Node.js 20 when building from source.
 
-This preview is not published to the Visual Studio Marketplace yet. For now, install it from source or a local VSIX. Marketplace publication is planned after the restore and recovery paths have held up through more daily use.
-
-### Tested setup
-
-This started as a fix for my own workflow, and that is still the support boundary for this preview. I use it daily on an Apple Silicon Mac with macOS 26.5.2, VS Code 1.128.1, zsh 5.9, tmux 3.6a, Codex CLI, and Claude Code.
-
-I have not tested Intel Macs, other operating systems, shells, terminal configurations, multiplexers, or agent harnesses. If your setup differs, expect rough edges and include versions plus a redacted log when [opening an issue](https://github.com/LEstradioto/ai-terminal-sessions/issues).
-
-On another Mac, these are the things most likely to differ:
-
-- `$SHELL` selects the login shell used when an agent is restored.
-- `tmux`, `codex`, and `claude` are resolved from `PATH`. If a CLI works in Terminal.app but not here, set its absolute path in `aiTerminalSessions.executables`. Homebrew usually installs under `/opt/homebrew` on Apple Silicon and `/usr/local` on Intel.
-- The private tmux server ignores `~/.tmux.conf`, so personal tmux bindings should not affect it.
-- `defaultLocation` switches managed tabs between the editor and terminal panel.
+It is not published to the Visual Studio Marketplace yet. I want more daily use behind the restore and recovery paths before doing that.
 
 ```sh
 brew install tmux
@@ -75,30 +74,24 @@ cd ai-terminal-sessions
 npm test
 ```
 
-Open the repo in VS Code and press `F5`, or build a VSIX:
+Open the repo in VS Code and press `F5`, or build a local VSIX:
 
 ```sh
 npx @vscode/vsce package
 code --install-extension ai-terminal-sessions-0.6.0.vsix
 ```
 
-Open **AI Sessions: More Actions...** and choose **Use as default terminal profile** only if you want the terminal `+` button to create managed tabs. The extension activates eagerly and restores in the background. VS Code does not expose extension startup priorities, so no manual ordering is required or configurable.
+Open **AI Sessions: More Actions...** and choose **Use as default terminal profile** only if you want the terminal `+` button to create managed tabs.
 
-## Commands
+### Tested setup
 
-The Command Palette stays focused on five entry points:
+I use this daily on an Apple Silicon Mac with macOS 26.5.2, VS Code 1.128.1, zsh 5.9, tmux 3.6a, Codex CLI, and Claude Code.
 
-- **New Persistent Terminal**
-- **Session History**
-- **Customize Active Tab...** for rename, icon, draft, pin, and remove
-- **Show or Hide Session Monitor**
-- **More Actions...** for settings, recovery, logs, and maintenance
+I have not tested Intel Macs, other operating systems, shells, terminal configurations, multiplexers, or agent harnesses. If your setup differs, expect rough edges and include versions plus a redacted log when [opening an issue](https://github.com/LEstradioto/ai-terminal-sessions/issues).
 
-You can also right-click a managed terminal tab to rename it, change its icon, recover its draft, manage tmux panes, pin it, or control its attention marker. Icons start in **Automatic** mode. Choosing any specific icon locks that tab to the manual choice; choose **Automatic** again to resume detection.
+`tmux`, `codex`, and `claude` are resolved from `PATH`. Set absolute paths in `aiTerminalSessions.executables` when a CLI works in Terminal.app but not in VS Code. The private tmux server ignores `~/.tmux.conf`, so personal bindings do not leak into managed tabs.
 
-The status bar counter opens a fast session switcher grouped by attention, working, recent, and older sessions. It also compares saved sessions, live connections, and visible managed tabs. After reload, a warning such as `13 tabs / 12 sessions` means restore needs inspection; click it to repair or open the log.
-
-## Shortcuts
+## Shortcuts and tmux
 
 | Action | Default | My setup |
 |---|---:|---:|
@@ -109,62 +102,45 @@ The status bar counter opens a fast session switcher grouped by attention, worki
 
 "Hyper" is my macOS Hyper key mapped to `Cmd+Option`. The extension does not register it.
 
-Use **Show or Hide Session Monitor** or its shortcut to close the monitor. The extension hides and reuses the same auxiliary window, preserving its size and position. The native macOS close button destroys that window, so the next one may open at VS Code's default bounds. VS Code does not expose auxiliary-window bounds to extensions.
+On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. Copy mode uses `v` to begin selection, arrow keys to extend it, and `y` to copy. Mouse selection also enters copy mode and keeps the selected text visible after copying. While it is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
 
-Keyboard scrolling enters tmux copy mode. Drag to select text; releasing the mouse copies it to the macOS clipboard and keeps the selection visible. For keyboard selection, press `v`, extend with the arrow keys, then press `y` to copy and return to the live terminal. Press `q` or `Escape` to cancel.
-On a MacBook keyboard, `Page Up/Down` is `Fn+Up/Down`, so the full shortcut is `Shift+Fn+Up/Down`.
+Each tab keeps the standard tmux prefix, `Ctrl+B`. Useful follow-up keys are `%` to split right, `"` to split down, arrow keys to change pane, `o` for the next pane, `z` to zoom, `x` to close, `[` for scrollback, and `?` for the full list. The tab context menu exposes the same pane actions while you learn the bindings.
 
-Tmux owns normal mouse gestures while its mouse mode is active. To make a native VS Code terminal selection instead, enable `terminal.integrated.macOptionClickForcesSelection` and hold `Option` while dragging.
-
-Each tab uses the standard tmux prefix, `Ctrl+B`. Common follow-up keys are `%` to split right, `"` to split down, arrow keys to change pane, `o` for the next pane, `z` to zoom, `x` to close, `[` for scrollback, and `?` for the complete binding list. **Tmux Pane Actions** exposes the same operations through the tab context menu while you learn the keys. Right-click remains owned by VS Code instead of opening a second tmux menu.
-
-## Close and restore
+## Close, restore, and history
 
 | Action | Default behavior |
 |---|---|
-| Close a tab with X or a shortcut | Kill its private tmux session and forget the tab |
-| Exit the shell cleanly | Forget the tab |
+| Close a tab with X or a shortcut | Kill its private tmux session and remove the live tab |
+| Exit the shell cleanly | Remove the live tab |
 | Reload or close the VS Code window | Keep the process and restore the tab |
-| Restart the machine | Resume saved Codex and Claude sessions; restore generic tabs without rerunning commands |
+| Restart the machine | Resume saved Codex and Claude sessions; restore generic tabs as shells |
 
-`closeBehavior` can change an explicit close to `forget` or `keep`. Failed tmux termination never drops recovery data. One VS Code window controls a workspace at a time.
+Explicitly closed tabs stay in **Session History**. Browse the local preview and press `Enter` to restore one tab. Snapshot recovery remains available as an advanced fallback and warns before adding several tabs.
 
-Explicitly closed tabs remain in **AI Sessions: Session History**. Move through the list to preview recent messages, then press `Enter` to restore only that tab. Snapshot recovery is still available as an advanced fallback and warns before adding multiple tabs.
+Before moving a workspace to another disk, use **Prepare workspace move...**. The extension saves recovery data, stops managed processes, and provides a matching import action for the new path. See [Troubleshooting](docs/troubleshooting.md#moving-a-workspace-to-another-disk) for the full sequence.
 
-### Moving a workspace
+## Config and privacy
 
-Do not move a workspace to another disk while its managed tmux processes are live. A cross-volume move copies and deletes files, so an agent or server may keep writing to the old location while the copy is in progress.
+The public settings cover close behavior, cold restore, editor or panel placement, drafts, the monitor, notifications, and executable paths. The defaults are meant to work without setup.
 
-1. Open **AI Sessions: More Actions...** and choose **Prepare workspace move...**.
-2. Wait for confirmation, then quit VS Code.
-3. Move the folder and open it from the new location.
-4. Open **More Actions...** and choose **Import a prepared workspace move...**.
+There is no telemetry or hosted service. State, drafts, previews, and history stay local. **Rename with AI** runs only when requested and sends at most two recent user messages to the selected Codex, Claude, or VS Code provider. Choose the deterministic `local` provider to avoid model calls.
 
-Preparation saves tabs, pane layouts, agent IDs, drafts, history, and archive data in VS Code's local global storage, then stops the managed tmux processes and suspends the old workspace state. Import rewrites working directories under the workspace root, restores the tabs, and deletes the transfer bundle. If any process fails to stop, do not move the files; inspect the extension log first. Paths outside the workspace root are not rewritten.
+The extension reads local Codex and Claude metadata to restore sessions and derive status. See [Data and privacy](docs/privacy.md) for the exact data flow and deletion steps.
 
-## Rename, config, and privacy
-
-Rename with AI only runs on command. The default `sameHarness` provider keeps Codex context in Codex and Claude context in Claude. `local` skips model calls; `vscode` uses a model provided by VS Code.
-
-Other settings cover cold restore, editor or panel placement, drafts, monitor always-on-top, ready notifications, close behavior, and executable paths.
-
-There is no telemetry or hosted service. State, drafts, closed-session previews, and history stay local. Automatic polling does not send prompts to a model. The extension is disabled in untrusted and virtual workspaces. See [Data and privacy](docs/privacy.md) for the exact data flow and deletion steps.
-
-Before uninstalling, open **AI Sessions: More Actions...** and choose **Stop all managed sessions...**.
+Before uninstalling, choose **AI Sessions: More Actions...**, then **Stop all managed sessions...**.
 
 ## Limits
 
 - macOS only for now.
-- One VS Code window per workspace.
-- One tmux session and one tmux window per tab. A tab may contain several panes.
-- The normal path is one agent pane plus helper panes. Multiple agent panes are restored independently, but this is newer and less exercised than one agent per tab.
-- tmux owns scrollback inside managed tabs. Trackpad and mouse-wheel scrolling work, but the native VS Code terminal scrollbar does not represent tmux history.
-- The 20,000-line scrollback limit applies when a tmux pane is created. Existing panes keep the limit they started with.
-- Generic processes survive VS Code restarts but not machine restarts or a prepared workspace move. Their panes return as shells and commands are not rerun automatically.
-- The floating always-on-top monitor uses optional VS Code workbench capabilities and can fall back to a regular editor.
+- One VS Code window controls a workspace at a time.
+- One tmux session and one tmux window belong to each tab. A tab may contain several panes.
+- tmux owns managed scrollback, so the native VS Code scrollbar does not represent its history.
+- Generic processes survive VS Code restarts but not machine restarts or a prepared workspace move. Their panes return as shells and commands are not rerun.
+- The floating monitor depends on optional VS Code workbench capabilities and may fall back to a normal editor.
+- macOS can attribute access from a long-lived terminal child process to VS Code. If the repeated "access data from other apps" prompt appears, inspect the responsible binary before granting broader permissions. See [Troubleshooting](docs/troubleshooting.md#macos-keeps-asking-to-access-data-from-other-apps).
 - The PTY bridge uses the compatible `node-pty` bundled with the tested VS Code build.
 
-See [Architecture](docs/architecture.md) and [Troubleshooting](docs/troubleshooting.md) for the internals and recovery commands.
+See [Architecture](docs/architecture.md) for the internals.
 
 ## Development
 
@@ -175,7 +151,7 @@ npm run check
 npm run test:coverage
 ```
 
-The [demo](demo) uses fake transcripts and a fake Codex process. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before sending code or logs.
+The [demo](demo) uses fake transcripts and a fake Codex process. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before sending code or logs.
 
 ## License
 

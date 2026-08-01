@@ -291,6 +291,7 @@ class SessionManager {
       (this.context.storageUri && this.context.storageUri.fsPath) || '',
     );
     this.sessionStatusBar = undefined;
+    this.copyModeStatusBar = undefined;
     this.closeEventsInFlight = 0;
     this.started = false;
     this.restoringTabs = false;
@@ -347,6 +348,10 @@ class SessionManager {
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.markNeedsAttention', () => this.markActiveNeedsAttention()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageUp', () => this.scrollActive('up')));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageDown', () => this.scrollActive('down')));
+    subscriptions.push(vscode.commands.registerCommand(
+      'aiTerminalSessions.jumpToBottom',
+      () => this.jumpActiveToBottom(),
+    ));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitorPin', () => this.toggleMonitorPin()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitor', () => this.toggleMonitor()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.remove', () => this.removeActive()));
@@ -373,6 +378,16 @@ class SessionManager {
     this.sessionStatusBar = sessionStatusBar;
     subscriptions.push(sessionStatusBar);
     sessionStatusBar.show();
+
+    const copyModeStatusBar = vscode.window.createStatusBarItem(
+      'aiTerminalSessions.copyMode',
+      vscode.StatusBarAlignment.Left,
+      9,
+    );
+    copyModeStatusBar.name = 'Tmux Copy Mode';
+    copyModeStatusBar.command = 'aiTerminalSessions.jumpToBottom';
+    this.copyModeStatusBar = copyModeStatusBar;
+    subscriptions.push(copyModeStatusBar);
     this.updateSessionStatusBar();
     subscriptions.push(vscode.window.registerWebviewPanelSerializer(MONITOR_VIEW_TYPE, {
       deserializeWebviewPanel: async (panel) => {
@@ -976,6 +991,29 @@ class SessionManager {
         ? `${counts.total} AI terminal sessions, ${counts.attentionPanes} panes need attention`
         : `AI terminal restore warning, ${health.extra} extra tabs and ${health.missing} disconnected sessions`,
     };
+    this.updateCopyModeStatusBar();
+  }
+
+  updateCopyModeStatusBar() {
+    const item = this.copyModeStatusBar;
+    if (!item) return;
+    const pane = focusedPane(this.activeRecord());
+    if (!paneInCopyMode(pane)) {
+      item.hide();
+      return;
+    }
+
+    const distance = Number(pane.scrollPosition) || 0;
+    item.text = '$(arrow-down) Jump to bottom';
+    item.tooltip = [
+      'Tmux copy mode is active.',
+      distance > 0 ? `${distance} line(s) above live output.` : 'The live terminal is paused.',
+      'Click to return to live output. Escape or q also exits copy mode.',
+    ].join('\n');
+    item.accessibilityInformation = {
+      label: 'Tmux copy mode is active. Jump to live terminal output.',
+    };
+    item.show();
   }
 
   sessionSwitcherItems(now = Date.now()) {
@@ -2329,6 +2367,25 @@ class SessionManager {
     await this.runTmux(['send-keys', '-X', '-t', target, 'page-down-and-cancel'], true);
   }
 
+  async jumpActiveToBottom() {
+    const record = this.activeRecord();
+    if (!record) return this.warnManagedTerminal();
+    const target = `${record.tmuxSession}:`;
+    await this.runTmux([
+      'send-keys', '-X', '-t', target, 'history-bottom', ';',
+      'send-keys', '-X', '-t', target, 'cancel',
+    ], true);
+    const pane = focusedPane(record);
+    if (pane) {
+      pane.inMode = false;
+      pane.mode = '';
+      pane.scrollPosition = 0;
+    }
+    this.updateCopyModeStatusBar();
+    await delay(80);
+    await this.scanAll();
+  }
+
   async showPaneActions() {
     const record = this.activeRecord();
     if (!record) return this.warnManagedTerminal();
@@ -3181,7 +3238,7 @@ class SessionManager {
     await this.loadCodexThreadNames();
     const panesRaw = await this.runTmux([
       'list-panes', '-a', '-F',
-      '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_layout}\t#{pane_id}\t#{@ai-pane-id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}\t#{pane_title}\t#{pane_start_command}',
+      '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_layout}\t#{pane_id}\t#{@ai-pane-id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}\t#{pane_title}\t#{pane_in_mode}\t#{pane_mode}\t#{scroll_position}\t#{pane_start_command}',
     ], true);
     const parsedPanes = parseTmuxPanes(panesRaw);
     await this.ensurePaneIdentities(parsedPanes);
@@ -3315,6 +3372,9 @@ class SessionManager {
         process: pane.command,
         startCommand: pane.startCommand,
         active: pane.active,
+        inMode: pane.inMode,
+        mode: pane.mode,
+        scrollPosition: pane.scrollPosition,
         lastTerminalActivityAt: Number(previous && previous.lastTerminalActivityAt)
           || (previous && previous.active ? Number(record.lastTerminalActivityAt) || 0 : 0),
         lastTerminalActivitySource: previous && previous.lastTerminalActivitySource
@@ -3937,9 +3997,17 @@ function parseTmuxPanes(raw) {
       command: parts[11],
       active: parts[12] === '1',
       title: parts[13],
-      startCommand: parts.slice(14).join('\t'),
+      inMode: parts[14] === '1',
+      mode: parts[15],
+      scrollPosition: Math.max(0, Number(parts[16]) || 0),
+      startCommand: parts.slice(17).join('\t'),
     };
   }).filter((pane) => pane.session && pane.id);
+}
+
+function paneInCopyMode(pane) {
+  if (!pane || !pane.inMode) return false;
+  return !pane.mode || /^(?:copy|view)-mode/.test(pane.mode);
 }
 
 function groupPanesBySession(panes) {

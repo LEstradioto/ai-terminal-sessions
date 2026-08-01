@@ -4,9 +4,12 @@ All notable changes to AI Terminal Sessions are documented here.
 
 ## 0.6.0
 
+- Added a short public demo to the README and tightened the product overview around the daily tab workflow.
+- Documented how to identify the child process behind repeated macOS App Data prompts without granting VS Code Full Disk Access.
 - Changed the Session Monitor toggle to hide and reuse its auxiliary window, preserving the user's size and position.
 - Restored Rename with AI as a fast Command Palette action for the active managed tab.
 - Kept tmux mouse selections visible and copied them directly to the macOS clipboard.
+- Added a visible **Jump to bottom** action while the active pane is paused in tmux copy mode.
 - Added `v`, arrow keys, and `y` as a simple keyboard selection flow in tmux copy mode.
 - Added multiple panes per tab with the standard `Ctrl+B` tmux prefix and a contextual pane actions menu.
 - Tracked agent status, attention acknowledgement, roles, focus, and drafts independently per pane.

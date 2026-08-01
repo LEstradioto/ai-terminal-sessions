@@ -155,6 +155,11 @@
         "category": "AI Sessions"
       },
       {
+        "command": "aiTerminalSessions.jumpToBottom",
+        "title": "Jump to Live Terminal Output",
+        "category": "AI Sessions"
+      },
+      {
         "command": "aiTerminalSessions.toggleMonitorPin",
         "title": "Pin or Unpin from Session Monitor",
         "category": "AI Sessions",
@@ -314,6 +319,10 @@
         },
         {
           "command": "aiTerminalSessions.scrollPageDown",
+          "when": "false"
+        },
+        {
+          "command": "aiTerminalSessions.jumpToBottom",
           "when": "false"
         },
         {

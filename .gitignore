@@ -4,6 +4,7 @@ node_modules/
 coverage/
 demo/.work/
 media/*.mp4
+!media/ai-terminal-sessions-demo.mp4
 media/*.mov
 media/*.gif
 !media/session-monitor.gif

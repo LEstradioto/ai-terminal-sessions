@@ -11,6 +11,29 @@ tmux -V
 
 Executable-path settings are machine-scoped and cannot be supplied by an untrusted workspace.
 
+## macOS keeps asking to access data from other apps
+
+This popup comes from macOS privacy controls, not from a dialog created by the extension. A child process inside tmux can trigger it. Because the private tmux server was started by VS Code, macOS may name Visual Studio Code as the responsible app even when another executable requested the protected data.
+
+Do not grant Full Disk Access just to silence the message. Identify the responsible executable first:
+
+```sh
+/usr/bin/log stream --style compact \
+  --predicate 'process == "tccd" AND eventMessage CONTAINS[c] "AUTHREQ_PROMPTING"'
+```
+
+Leave that command running in Terminal.app, reproduce the popup once, and inspect `binary_path` in the matching `SystemPolicyAppData` event.
+
+One confirmed cause is Docker Desktop's credential helper:
+
+```text
+binary_path=/Applications/Docker.app/Contents/Resources/bin/docker-credential-desktop
+```
+
+If `~/.docker/config.json` contains `"credsStore": "desktop"` and `docker-credential-osxkeychain` is installed, back up the file and change that value to `osxkeychain`. This keeps Docker credentials in the macOS Keychain without asking VS Code to read Docker Desktop's app data. Some registries may require `docker login` again. Docker Desktop may also rewrite this setting during a future update.
+
+The responsible binary may be different on another machine. Fix that tool or its data path instead of assuming tmux itself needs private app data.
+
 ## A second VS Code window says the workspace is already controlled
 
 Only one extension host may own a workspace at a time. This prevents one window from overwriting state or terminating sessions used by another. Close the first window and wait a few seconds. A stale lease left by a crash expires automatically.

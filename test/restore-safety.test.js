@@ -200,6 +200,16 @@ test('managed terminals expose keyboard paging through tmux copy mode', () => {
   assert.match(scroll, /'send-keys', '-X', '-t', target, 'page-down-and-cancel'/);
 });
 
+test('copy mode exposes a visible jump back to live output', () => {
+  assert.match(source, /#\{pane_in_mode\}\\t#\{pane_mode\}\\t#\{scroll_position\}/);
+  assert.match(source, /item\.text = '\$\(arrow-down\) Jump to bottom'/);
+  const start = source.indexOf('  async jumpActiveToBottom()');
+  const end = source.indexOf('\n  async showPaneActions()', start);
+  const jump = source.slice(start, end);
+  assert.match(jump, /'history-bottom'/);
+  assert.match(jump, /'cancel'/);
+});
+
 test('session history restores one archived tab and isolates bulk snapshot recovery', () => {
   const restoreStart = source.indexOf('  async restoreArchivedSession(entry)');
   const restoreEnd = source.indexOf('\n  historyQuickPickItems()', restoreStart);
