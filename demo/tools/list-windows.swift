@@ -1,7 +1,10 @@
 import CoreGraphics
 import Foundation
 
-let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+let includeOffscreen = CommandLine.arguments.contains("--all")
+let options: CGWindowListOption = includeOffscreen
+  ? [.optionAll, .excludeDesktopElements]
+  : [.optionOnScreenOnly, .excludeDesktopElements]
 guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
   exit(1)
 }

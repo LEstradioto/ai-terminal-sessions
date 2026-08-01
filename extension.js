@@ -1173,7 +1173,7 @@ class SessionManager {
     if (!hidden) return panel;
     await this.setMonitorHidden(true);
     this.stopMonitorRefresh();
-    if (returnTerminal) returnTerminal.show(false);
+    this.showTerminalIfLive(returnTerminal);
     this.output.appendLine('[monitor] hidden without destroying saved bounds');
     return panel;
   }
@@ -1189,7 +1189,7 @@ class SessionManager {
     await this.setMonitorHidden(false);
     this.startMonitorRefresh();
     await this.refreshMonitor();
-    if (returnTerminal) returnTerminal.show(false);
+    this.showTerminalIfLive(returnTerminal);
     this.output.appendLine('[monitor] shown with preserved bounds');
     return panel;
   }
@@ -1277,12 +1277,23 @@ class SessionManager {
         return false;
       }
       await delay(80);
-      if (returnTerminal) returnTerminal.show(false);
+      this.showTerminalIfLive(returnTerminal);
       this.output.appendLine('[monitor] opened floating compact monitor');
       return true;
     } catch (error) {
       this.log('monitor-float', error);
-      if (returnTerminal) returnTerminal.show(false);
+      this.showTerminalIfLive(returnTerminal);
+      return false;
+    }
+  }
+
+  showTerminalIfLive(terminal) {
+    if (!terminal || !vscode.window.terminals.includes(terminal)) return false;
+    try {
+      terminal.show(false);
+      return true;
+    } catch (error) {
+      this.log('monitor-return-focus', error);
       return false;
     }
   }

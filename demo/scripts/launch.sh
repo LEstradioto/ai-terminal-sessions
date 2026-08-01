@@ -5,8 +5,18 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 WORK="$ROOT/demo/.work"
 
-"$ROOT/demo/scripts/setup.sh"
+if [ -f "$WORK/user-data/code.lock" ]; then
+  printf 'Close the existing AI Terminal Sessions demo window, then run this command again.\n' >&2
+  printf 'If VS Code crashed, remove demo/.work after confirming no demo process is running.\n' >&2
+  exit 1
+fi
+
 tmux -L ai-terminal-sessions-demo kill-server 2>/dev/null || true
+case "$WORK" in
+  "$ROOT/demo/.work") rm -rf "$WORK" ;;
+  *) printf 'Refusing to reset unexpected demo path: %s\n' "$WORK" >&2; exit 1 ;;
+esac
+"$ROOT/demo/scripts/setup.sh"
 
 CODEX_HOME="$WORK/home/.codex" \
 AI_TERMINAL_SESSIONS_DEMO=1 \

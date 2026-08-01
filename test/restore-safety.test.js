@@ -67,6 +67,13 @@ test('monitor toggle preserves the auxiliary window instead of disposing it', ()
   const hide = source.slice(hideStart, hideEnd);
   assert.match(hide, /this\.workbench\.hidePanel\(panel\)/);
   assert.match(hide, /this\.setMonitorHidden\(true\)/);
+
+  const focusStart = source.indexOf('  showTerminalIfLive(terminal)');
+  const focusEnd = source.indexOf('\n  startMonitorRefresh()', focusStart);
+  const focus = source.slice(focusStart, focusEnd);
+  assert.match(focus, /vscode\.window\.terminals\.includes\(terminal\)/);
+  assert.match(focus, /try \{/);
+  assert.match(focus, /this\.log\('monitor-return-focus', error\)/);
 });
 
 test('terminal replacement is safe when the close event arrives late', () => {
