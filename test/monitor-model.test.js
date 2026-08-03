@@ -83,8 +83,6 @@ test('maps agent and acknowledged states to monitor tones', () => {
   assert.equal(statusTone('done', true), 'idle');
   assert.equal(statusLabel('done', false), 'READY');
   assert.equal(statusLabel('done', true), 'IDLE');
-  assert.equal(statusTone('idle', true, true), 'ready');
-  assert.equal(statusLabel('idle', true, true), 'READY');
 });
 
 test('finds the active pane process', () => {

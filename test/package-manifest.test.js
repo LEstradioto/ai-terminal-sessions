@@ -41,7 +41,7 @@ test('contributes the Session Monitor as a bottom panel view', () => {
   assert.equal(view.type, 'webview');
 });
 
-test('keeps the Command Palette focused and exposes fast AI rename', () => {
+test('keeps common commands within two selections and advanced commands contextual', () => {
   const hidden = new Set(manifest.contributes.menus.commandPalette
     .filter((item) => item.when === 'false')
     .map((item) => item.command));
@@ -50,26 +50,25 @@ test('keeps the Command Palette focused and exposes fast AI rename', () => {
     .filter((command) => !hidden.has(command));
   assert.deepEqual(visible, [
     'aiTerminalSessions.new',
+    'aiTerminalSessions.rename',
     'aiTerminalSessions.renameWithAI',
-    'aiTerminalSessions.customizeActive',
     'aiTerminalSessions.moreActions',
+    'aiTerminalSessions.paneActions',
     'aiTerminalSessions.toggleMonitor',
     'aiTerminalSessions.showSessionHistory',
+    'aiTerminalSessions.showSessionSwitcher',
   ]);
 });
 
-test('keeps attention controls contextual and out of the Command Palette', () => {
+test('puts active-tab actions directly in the terminal context menu', () => {
   const contextMenu = manifest.contributes.menus['terminal/context'];
-  const handled = contextMenu.find((item) => item.command === 'aiTerminalSessions.markHandled');
-  const needed = contextMenu.find((item) => item.command === 'aiTerminalSessions.markNeedsAttention');
-  assert.match(handled.when, /activeNeedsAttention/);
-  assert.match(needed.when, /!aiTerminalSessions\.activeNeedsAttention/);
-
-  const hidden = manifest.contributes.menus.commandPalette
-    .filter((item) => item.when === 'false')
-    .map((item) => item.command);
-  assert.ok(hidden.includes('aiTerminalSessions.markHandled'));
-  assert.ok(hidden.includes('aiTerminalSessions.markNeedsAttention'));
+  const commands = contextMenu.map((item) => item.command);
+  assert.ok(commands.includes('aiTerminalSessions.renameWithAI'));
+  assert.ok(commands.includes('aiTerminalSessions.changeIcon'));
+  assert.ok(commands.includes('aiTerminalSessions.paneActions'));
+  assert.ok(commands.includes('aiTerminalSessions.changePaneRole'));
+  assert.ok(!commands.includes('aiTerminalSessions.markHandled'));
+  assert.ok(!commands.includes('aiTerminalSessions.markNeedsAttention'));
 });
 
 test('binds keyboard paging only inside managed terminals', () => {

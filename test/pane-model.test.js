@@ -35,10 +35,10 @@ test('tracks ready acknowledgement independently for each agent pane', () => {
     status: 'done',
     lastActivityAt: 20,
   }, 100);
-  assert.equal(ready.readyAt, 100);
+  assert.equal(ready.readyAt, 20);
   assert.equal(ready.newlyReady, true);
   assert.equal(agentNeedsAttention(ready), true);
-  ready.lastAcknowledgedReadyAt = 100;
+  ready.lastAcknowledgedReadyAt = 20;
   assert.equal(agentNeedsAttention(ready), false);
 
   const repeated = mergeObservedAgent({ ...ready, status: 'idle' }, {
@@ -48,7 +48,7 @@ test('tracks ready acknowledgement independently for each agent pane', () => {
     lastActivityAt: 20,
   }, 200);
   assert.equal(repeated.newlyReady, false);
-  assert.equal(repeated.readyAt, 100);
+  assert.equal(repeated.readyAt, 20);
 });
 
 test('keeps one prompt timer through running and strong completion observations', () => {
@@ -94,7 +94,31 @@ test('keeps one prompt timer through running and strong completion observations'
     turnDurationMs: 3_000,
   }, 5_000);
   assert.equal(repeated.newlyReady, false);
-  assert.equal(repeated.readyAt, 4_100);
+  assert.equal(repeated.readyAt, 4_000);
+});
+
+test('does not announce a historical completion when turn timing is first backfilled', () => {
+  const previous = {
+    type: 'claude',
+    sessionId: 'one',
+    status: 'done',
+    lastActivityAt: 2_000,
+    readyAt: 2_000,
+    lastAcknowledgedReadyAt: 2_000,
+  };
+  const observed = {
+    type: 'claude',
+    sessionId: 'one',
+    status: 'done',
+    lastActivityAt: 2_000,
+    turnStartedAt: 1_000,
+    turnCompletedAt: 2_000,
+    turnDurationMs: 1_000,
+  };
+  const merged = mergeObservedAgent(previous, observed, 9_000);
+  assert.equal(merged.newlyReady, false);
+  assert.equal(merged.readyAt, 2_000);
+  assert.equal(agentNeedsAttention(merged), false);
 });
 
 test('an acknowledged interrupted event stays idle until transcript activity changes', () => {

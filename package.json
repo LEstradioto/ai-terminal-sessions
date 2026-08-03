@@ -122,12 +122,6 @@
         "icon": "$(symbol-color)"
       },
       {
-        "command": "aiTerminalSessions.customizeActive",
-        "title": "Customize Active Tab...",
-        "category": "AI Sessions",
-        "icon": "$(paintcan)"
-      },
-      {
         "command": "aiTerminalSessions.moreActions",
         "title": "More Actions...",
         "category": "AI Sessions",
@@ -151,16 +145,10 @@
         "icon": "$(layout)"
       },
       {
-        "command": "aiTerminalSessions.markHandled",
-        "title": "Mark as Handled",
+        "command": "aiTerminalSessions.changePaneRole",
+        "title": "Set Tmux Pane Role",
         "category": "AI Sessions",
-        "icon": "$(check)"
-      },
-      {
-        "command": "aiTerminalSessions.markNeedsAttention",
-        "title": "Mark as Needs Attention",
-        "category": "AI Sessions",
-        "icon": "$(circle-filled)"
+        "icon": "$(symbol-property)"
       },
       {
         "command": "aiTerminalSessions.scrollPageUp",
@@ -269,16 +257,6 @@
           "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
-          "command": "aiTerminalSessions.markHandled",
-          "group": "2_attention@1",
-          "when": "aiTerminalSessions.managedTerminalActive && aiTerminalSessions.activeAttentionEditable && aiTerminalSessions.activeNeedsAttention"
-        },
-        {
-          "command": "aiTerminalSessions.markNeedsAttention",
-          "group": "2_attention@1",
-          "when": "aiTerminalSessions.managedTerminalActive && aiTerminalSessions.activeAttentionEditable && !aiTerminalSessions.activeNeedsAttention"
-        },
-        {
           "command": "aiTerminalSessions.toggleMonitorPin",
           "group": "3_monitor@1",
           "when": "aiTerminalSessions.managedTerminalActive"
@@ -286,6 +264,11 @@
         {
           "command": "aiTerminalSessions.paneActions",
           "group": "4_tmux@1",
+          "when": "aiTerminalSessions.managedTerminalActive"
+        },
+        {
+          "command": "aiTerminalSessions.changePaneRole",
+          "group": "4_tmux@2",
           "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
@@ -301,7 +284,7 @@
         },
         {
           "command": "aiTerminalSessions.rename",
-          "when": "false"
+          "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
           "command": "aiTerminalSessions.renameWithAI",
@@ -321,14 +304,10 @@
         },
         {
           "command": "aiTerminalSessions.paneActions",
-          "when": "false"
+          "when": "aiTerminalSessions.managedTerminalActive"
         },
         {
-          "command": "aiTerminalSessions.markHandled",
-          "when": "false"
-        },
-        {
-          "command": "aiTerminalSessions.markNeedsAttention",
+          "command": "aiTerminalSessions.changePaneRole",
           "when": "false"
         },
         {
@@ -381,7 +360,7 @@
         },
         {
           "command": "aiTerminalSessions.showSessionSwitcher",
-          "when": "false"
+          "when": "true"
         }
       ]
     },

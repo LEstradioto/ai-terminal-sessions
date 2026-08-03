@@ -31,13 +31,13 @@ test('counts only unacknowledged states as attention', () => {
   assert.equal(sessionNeedsAttention(sessions[5]), false);
 });
 
-test('counts an idle session manually flagged for attention', () => {
+test('ignores legacy manual attention flags', () => {
   const flagged = { ...record('a', 'Follow up'), manuallyNeedsAttention: true };
-  assert.equal(sessionNeedsAttention(flagged), true);
+  assert.equal(sessionNeedsAttention(flagged), false);
   assert.deepEqual(sessionCounts([flagged]), {
     total: 1,
-    attention: 1,
-    attentionPanes: 1,
+    attention: 0,
+    attentionPanes: 0,
     working: 0,
     workingPanes: 0,
   });

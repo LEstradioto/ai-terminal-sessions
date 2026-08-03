@@ -20,20 +20,21 @@ function shortString(value, maximum = 500) {
 
 function normalizeAgent(agent) {
   if (!agent || !VALID_AGENT.has(agent.type) || !UUID_RE.test(agent.sessionId || '')) return undefined;
+  const status = VALID_STATUS.has(agent.status) ? agent.status : 'idle';
+  const turnCompletedAt = finiteNumber(agent.turnCompletedAt);
   return {
     type: agent.type,
     sessionId: agent.sessionId,
     active: Boolean(agent.active),
-    status: VALID_STATUS.has(agent.status) ? agent.status : 'idle',
+    status,
     title: shortString(agent.title, 500),
     lastActivityAt: finiteNumber(agent.lastActivityAt),
     lastSeenAt: finiteNumber(agent.lastSeenAt),
     turnStartedAt: finiteNumber(agent.turnStartedAt),
-    turnCompletedAt: finiteNumber(agent.turnCompletedAt),
+    turnCompletedAt,
     turnDurationMs: finiteNumber(agent.turnDurationMs),
-    readyAt: finiteNumber(agent.readyAt),
+    readyAt: normalizeReadyAt(status, agent.readyAt, turnCompletedAt),
     lastAcknowledgedReadyAt: finiteNumber(agent.lastAcknowledgedReadyAt),
-    manuallyNeedsAttention: Boolean(agent.manuallyNeedsAttention),
     interruptedAt: finiteNumber(agent.interruptedAt),
     lastAcknowledgedInterruptedAt: finiteNumber(agent.lastAcknowledgedInterruptedAt),
   };
@@ -72,6 +73,8 @@ function normalizeSessionRecord(raw, workspaceKey) {
   if (!raw || typeof raw.id !== 'string' || !raw.id || typeof raw.tmuxSession !== 'string') return undefined;
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(raw.tmuxSession)) return undefined;
   const activeAgent = normalizeAgent(raw.activeAgent);
+  const status = VALID_STATUS.has(raw.status) ? raw.status : 'idle';
+  const turnCompletedAt = finiteNumber(raw.turnCompletedAt);
   return {
     id: shortString(raw.id, 128),
     workspaceKey,
@@ -83,7 +86,7 @@ function normalizeSessionRecord(raw, workspaceKey) {
     iconPreset: normalizeIconPreset(raw.iconPreset),
     iconMode: normalizeIconMode(raw.iconMode, raw.iconPreset),
     sourceTitle: shortString(raw.sourceTitle, 500),
-    status: VALID_STATUS.has(raw.status) ? raw.status : 'idle',
+    status,
     monitorPinned: Boolean(raw.monitorPinned),
     monitorPinnedAt: finiteNumber(raw.monitorPinnedAt),
     tabOrder: Number.isFinite(raw.tabOrder) ? Number(raw.tabOrder) : undefined,
@@ -92,14 +95,13 @@ function normalizeSessionRecord(raw, workspaceKey) {
     lastFocusedAt: finiteNumber(raw.lastFocusedAt),
     activePaneId: shortString(raw.activePaneId, 128),
     backgroundAttentionCount: finiteNumber(raw.backgroundAttentionCount),
-    readyAt: finiteNumber(raw.readyAt),
+    readyAt: normalizeReadyAt(status, raw.readyAt, turnCompletedAt),
     lastAcknowledgedReadyAt: finiteNumber(raw.lastAcknowledgedReadyAt),
-    manuallyNeedsAttention: Boolean(raw.manuallyNeedsAttention),
     interruptedAt: finiteNumber(raw.interruptedAt),
     lastAcknowledgedInterruptedAt: finiteNumber(raw.lastAcknowledgedInterruptedAt),
     lastAgentActivityAt: finiteNumber(raw.lastAgentActivityAt),
     turnStartedAt: finiteNumber(raw.turnStartedAt),
-    turnCompletedAt: finiteNumber(raw.turnCompletedAt),
+    turnCompletedAt,
     turnDurationMs: finiteNumber(raw.turnDurationMs),
     lastTerminalActivityAt: finiteNumber(raw.lastTerminalActivityAt),
     lastTerminalActivitySource: VALID_TERMINAL_ACTIVITY_SOURCE.has(raw.lastTerminalActivitySource)
@@ -115,6 +117,13 @@ function normalizeSessionRecord(raw, workspaceKey) {
     windows: normalizeWindows(raw.windows),
     ...(activeAgent && { activeAgent: { type: activeAgent.type, sessionId: activeAgent.sessionId } }),
   };
+}
+
+function normalizeReadyAt(status, readyAt, turnCompletedAt) {
+  const ready = finiteNumber(readyAt);
+  const completed = finiteNumber(turnCompletedAt);
+  if (status === 'done' && ready > completed && completed > 0) return completed;
+  return ready;
 }
 
 function statePayload(workspaceKey, records, revision = 0, savedAt = Date.now()) {

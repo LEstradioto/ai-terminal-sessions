@@ -183,13 +183,18 @@ test('private tmux sessions route wheel scrolling by pane harness', () => {
   const presentation = source.slice(presentationStart, presentationEnd);
   assert.match(presentation, /'@ai-pane-agent'/);
   assert.match(presentation, /pane\.agent && pane\.agent\.active !== false && pane\.agent\.type === 'claude'/);
+
+  const ensureStart = source.indexOf('  async ensureSessionImpl(');
+  const ensureEnd = source.indexOf('\n  async tmuxHasSession(', ensureStart);
+  const ensure = source.slice(ensureStart, ensureEnd);
+  assert.match(ensure, /if \(alive\) await this\.configurePanePresentation\(record\)/);
 });
 
 test('tmux click and drag copies text and immediately returns to live output', () => {
   const start = source.indexOf('  async configureTmuxSession(');
   const end = source.indexOf('\n  async configurePanePresentation(', start);
   const configure = source.slice(start, end);
-  assert.match(configure, /'copy-command', '\/usr\/bin\/pbcopy'/);
+  assert.match(configure, /'copy-command', copyCommand/);
   assert.match(configure, /'MouseDrag1Pane', 'copy-mode', '-M', '-t', '='/);
   assert.match(configure, /'DoubleClick1Pane',[\s\S]*?'select-word',[\s\S]*?'copy-pipe-and-cancel'/);
   assert.match(configure, /'MouseDragEnd1Pane',[\s\S]*?'copy-pipe-and-cancel'/);

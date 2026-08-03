@@ -344,13 +344,14 @@ class SessionManager {
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.rename', () => this.renameActive()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.renameWithAI', () => this.renameActiveWithAI()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.changeIcon', () => this.changeActiveIcon()));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.customizeActive', () => this.customizeActive()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.moreActions', () => this.showMoreActions()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.diagnoseRenameAI', () => this.diagnoseRenameAI()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.restoreDraft', () => this.restoreDraft()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.paneActions', () => this.showPaneActions()));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.markHandled', () => this.markActiveHandled()));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.markNeedsAttention', () => this.markActiveNeedsAttention()));
+    subscriptions.push(vscode.commands.registerCommand(
+      'aiTerminalSessions.changePaneRole',
+      () => this.changeActivePaneRole(),
+    ));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageUp', () => this.scrollActive('up')));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.scrollPageDown', () => this.scrollActive('down')));
     subscriptions.push(vscode.commands.registerCommand(
@@ -910,14 +911,6 @@ class SessionManager {
 
   updateManagedTerminalContext(record) {
     vscode.commands.executeCommand('setContext', 'aiTerminalSessions.managedTerminalActive', Boolean(record));
-    const editable = Boolean(record && !['running', 'waiting', 'error', 'interrupted'].includes(record.status));
-    const needsAttention = Boolean(record && (
-      record.manuallyNeedsAttention
-      || (record.status === 'done'
-        && Number(record.readyAt) > Number(record.lastAcknowledgedReadyAt || 0))
-    ));
-    vscode.commands.executeCommand('setContext', 'aiTerminalSessions.activeAttentionEditable', editable);
-    vscode.commands.executeCommand('setContext', 'aiTerminalSessions.activeNeedsAttention', needsAttention);
   }
 
   terminalEditorLabels() {
@@ -1073,7 +1066,7 @@ class SessionManager {
         items.push({
           label: `${marker} ${recordTitle(record)}`,
           description: [
-            statusLabel(record.status, acknowledged, record.manuallyNeedsAttention),
+            statusLabel(record.status, acknowledged),
             activeProcess(record),
             turn,
             activityLabel(activityReference(record, record.createdAt || now), now),
@@ -1359,8 +1352,8 @@ class SessionManager {
           id: record.id,
           title: record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession),
           process: activeProcess(record),
-          status: statusLabel(record.status, acknowledged, record.manuallyNeedsAttention),
-          tone: statusTone(record.status, acknowledged, record.manuallyNeedsAttention),
+          status: statusLabel(record.status, acknowledged),
+          tone: statusTone(record.status, acknowledged),
           age: turn && (record.status === 'running' || record.status === 'waiting')
             ? ''
             : activityLabel(activityAt, now),
@@ -1418,7 +1411,6 @@ class SessionManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       lastFocusedAt: Date.now(),
-      manuallyNeedsAttention: false,
       ...overrides,
     };
     this.records.set(record.id, record);
@@ -1469,40 +1461,6 @@ class SessionManager {
         ? `${restored} tab(s) restored in the main window.`
         : 'There are no saved sessions to restore.',
     );
-  }
-
-  async customizeActive() {
-    const record = this.activeRecord();
-    if (!record) return this.warnManagedTerminal();
-    const title = record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession);
-    const items = [
-      { label: '$(sparkle) Rename with AI', action: 'rename-ai' },
-      { label: '$(edit) Rename manually', action: 'rename' },
-      { label: '$(symbol-color) Change icon and color', action: 'icon' },
-      { kind: vscode.QuickPickItemKind.Separator, label: 'Session' },
-      { label: '$(history) Recover last draft', action: 'draft' },
-      { label: '$(layout) Tmux pane actions', action: 'panes' },
-      {
-        label: record.monitorPinned
-          ? '$(pinned) Remove from Session Monitor'
-          : '$(pin) Pin to Session Monitor',
-        action: 'pin',
-      },
-      { kind: vscode.QuickPickItemKind.Separator, label: 'Danger zone' },
-      { label: '$(trash) Remove session...', action: 'remove' },
-    ];
-    const picked = await vscode.window.showQuickPick(items, {
-      title: `Customize ${title}`,
-      placeHolder: 'Choose what to change',
-    });
-    if (!picked || !picked.action) return;
-    if (picked.action === 'rename-ai') return this.renameActiveWithAI();
-    if (picked.action === 'rename') return this.renameActive();
-    if (picked.action === 'icon') return this.changeActiveIcon();
-    if (picked.action === 'draft') return this.restoreDraft();
-    if (picked.action === 'panes') return this.showPaneActions();
-    if (picked.action === 'pin') return this.toggleMonitorPin();
-    if (picked.action === 'remove') return this.removeActive();
   }
 
   async showMoreActions() {
@@ -2363,7 +2321,6 @@ class SessionManager {
       { label: '$(split-vertical) Split down', description: 'Ctrl+B "', action: 'split-down' },
       { label: '$(arrow-swap) Focus next pane', description: 'Ctrl+B o', action: 'next' },
       { label: '$(screen-full) Toggle pane zoom', description: 'Ctrl+B z', action: 'zoom' },
-      { label: '$(symbol-property) Set pane role...', action: 'role' },
       { label: '$(book) Enter scrollback', description: 'Ctrl+B [', action: 'copy-mode' },
       { kind: vscode.QuickPickItemKind.Separator, label: 'Keyboard' },
       {
@@ -2394,9 +2351,6 @@ class SessionManager {
       await this.runTmux(['resize-pane', '-Z', '-t', target]);
     } else if (picked.action === 'copy-mode') {
       await this.runTmux(['copy-mode', '-u', '-t', target]);
-    } else if (picked.action === 'role') {
-      await this.changeFocusedPaneRole(record, pane);
-      return;
     } else if (picked.action === 'close') {
       const confirmation = await vscode.window.showWarningMessage(
         'Close the focused tmux pane and terminate its process?',
@@ -2441,27 +2395,11 @@ class SessionManager {
     this.schedulePersist();
   }
 
-  async markActiveHandled() {
+  async changeActivePaneRole() {
     const record = this.activeRecord();
     if (!record) return this.warnManagedTerminal();
     await this.scanAll();
-    if (!this.acknowledgeAttention(record)) return;
-    this.schedulePersist();
-  }
-
-  async markActiveNeedsAttention() {
-    const record = this.activeRecord();
-    if (!record) return this.warnManagedTerminal();
-    await this.scanAll();
-    if (['running', 'waiting', 'error', 'interrupted'].includes(record.status)) return;
-    if (record.manuallyNeedsAttention) return;
-    const agent = focusedPane(record)?.agent;
-    if (agent) agent.manuallyNeedsAttention = true;
-    record.manuallyNeedsAttention = true;
-    this.refreshPtyName(record);
-    this.updateManagedTerminalContext(record);
-    this.updateSessionStatusBar();
-    this.schedulePersist();
+    return this.changeFocusedPaneRole(record);
   }
 
   async renameActive() {
@@ -2972,6 +2910,10 @@ class SessionManager {
       this.schedulePersist();
     }
     await this.configureTmuxSession(record);
+    // A live tmux session can predate newly introduced pane options. Reapply
+    // the saved presentation on every attach so restored panes receive those
+    // options even when their persisted agent fingerprint did not change.
+    if (alive) await this.configurePanePresentation(record);
     if (dimensions) await this.resizeSession(record, dimensions);
   }
 
@@ -3086,6 +3028,10 @@ class SessionManager {
   }
 
   async configureTmuxSession(record) {
+    const copyCommand = `/bin/sh ${shellQuote(path.join(
+      this.context.extensionPath,
+      'copy-nonempty.sh',
+    ))}`;
     // VS Code sends modified Enter as CSI-u. The private tmux server starts
     // without a tmux.conf, so explicitly preserve extended keys for TUIs.
     await this.runTmux([
@@ -3100,7 +3046,7 @@ class SessionManager {
       'set-option', '-t', record.tmuxSession, 'prefix', 'C-b', ';',
       'set-option', '-t', record.tmuxSession, 'prefix2', 'None', ';',
       'set-option', '-t', record.tmuxSession, 'mouse', 'on', ';',
-      'set-option', '-s', 'copy-command', '/usr/bin/pbcopy', ';',
+      'set-option', '-s', 'copy-command', copyCommand, ';',
       // Codex and shells use tmux scrollback. Claude owns its alternate-screen
       // scroll UI, so panes marked "application" receive the mouse event.
       'bind-key', '-T', 'root', 'WheelUpPane',
@@ -3315,9 +3261,6 @@ class SessionManager {
           readyAt: Number(previousAgent.readyAt) || Number(record.readyAt) || 0,
           lastAcknowledgedReadyAt: Number(previousAgent.lastAcknowledgedReadyAt)
             || Number(record.lastAcknowledgedReadyAt) || 0,
-          manuallyNeedsAttention: Boolean(
-            previousAgent.manuallyNeedsAttention || record.manuallyNeedsAttention
-          ),
           interruptedAt: Number(previousAgent.interruptedAt) || Number(record.interruptedAt) || 0,
           lastAcknowledgedInterruptedAt: Number(previousAgent.lastAcknowledgedInterruptedAt)
             || Number(record.lastAcknowledgedInterruptedAt) || 0,
@@ -3390,7 +3333,6 @@ class SessionManager {
     record.readyAt = selected ? Number(selected.readyAt) || 0 : 0;
     record.lastAcknowledgedReadyAt = selected
       ? Number(selected.lastAcknowledgedReadyAt) || 0 : 0;
-    record.manuallyNeedsAttention = selected ? Boolean(selected.manuallyNeedsAttention) : false;
     record.interruptedAt = selected ? Number(selected.interruptedAt) || 0 : 0;
     record.lastAcknowledgedInterruptedAt = selected
       ? Number(selected.lastAcknowledgedInterruptedAt) || 0 : 0;
@@ -3664,14 +3606,9 @@ class SessionManager {
   }
 
   acknowledgeAttention(record, pane = focusedPane(record)) {
-    const agent = pane && pane.agent;
-    const manual = Boolean(record && (record.manuallyNeedsAttention
-      || agent && agent.manuallyNeedsAttention));
-    if (agent) agent.manuallyNeedsAttention = false;
-    if (record) record.manuallyNeedsAttention = false;
     const ready = this.acknowledgeReady(record, pane);
     const interrupted = this.acknowledgeInterrupted(record, pane);
-    const changed = manual || ready || interrupted;
+    const changed = ready || interrupted;
     if (changed) {
       this.refreshPtyName(record);
       this.updateManagedTerminalContext(record);
@@ -4263,7 +4200,6 @@ function fingerprintRecord(record) {
         turnDurationMs: pane.agent.turnDurationMs,
         readyAt: pane.agent.readyAt,
         lastAcknowledgedReadyAt: pane.agent.lastAcknowledgedReadyAt,
-        manuallyNeedsAttention: pane.agent.manuallyNeedsAttention,
         interruptedAt: pane.agent.interruptedAt,
         lastAcknowledgedInterruptedAt: pane.agent.lastAcknowledgedInterruptedAt,
       },
@@ -4284,7 +4220,6 @@ function fingerprintRecord(record) {
     lastTerminalActivitySource: record.lastTerminalActivitySource,
     readyAt: record.readyAt,
     lastAcknowledgedReadyAt: record.lastAcknowledgedReadyAt,
-    manuallyNeedsAttention: record.manuallyNeedsAttention,
     interruptedAt: record.interruptedAt,
     lastAcknowledgedInterruptedAt: record.lastAcknowledgedInterruptedAt,
     activePaneId: record.activePaneId,

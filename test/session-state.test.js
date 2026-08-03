@@ -31,7 +31,8 @@ function record(title = 'First') {
     lastTerminalActivitySource: 'input',
     interruptedAt: 100,
     lastAcknowledgedInterruptedAt: 90,
-    manuallyNeedsAttention: true,
+    status: 'done',
+    readyAt: 1700,
     turnStartedAt: 1000,
     turnCompletedAt: 1500,
     turnDurationMs: 500,
@@ -44,6 +45,8 @@ function record(title = 'First') {
         type: 'codex',
         sessionId: '9c0ffbf3-5cfd-40fd-a860-2b54ad18d035',
         active: true,
+        status: 'done',
+        readyAt: 1700,
         turnStartedAt: 1000,
         turnCompletedAt: 1500,
         turnDurationMs: 500,
@@ -69,10 +72,19 @@ test('state schema rejects incompatible payloads and removes volatile private fi
   assert.equal(payload.records[0].iconMode, 'manual');
   assert.equal(payload.records[0].interruptedAt, 100);
   assert.equal(payload.records[0].lastAcknowledgedInterruptedAt, 90);
-  assert.equal(payload.records[0].manuallyNeedsAttention, true);
+  assert.equal(payload.records[0].readyAt, 1500);
+  assert.equal(pane.agent.readyAt, 1500);
   assert.equal(payload.records[0].turnStartedAt, 1000);
   assert.equal(payload.records[0].turnCompletedAt, 1500);
   assert.equal(payload.records[0].turnDurationMs, 500);
+});
+
+test('repairs scan-time ready timestamps using the real turn completion', () => {
+  const value = record();
+  value.lastAcknowledgedReadyAt = 1550;
+  const normalized = statePayload('workspace', [value]).records[0];
+  assert.equal(normalized.readyAt, 1500);
+  assert.ok(normalized.lastAcknowledgedReadyAt >= normalized.readyAt);
 });
 
 test('state falls back safely when an icon preset is unknown', () => {

@@ -23,7 +23,6 @@ function terminalStatusIcon(record, options = {}) {
   if (status === 'interrupted' && !interruptionWasAcknowledged(record)) {
     return STATUS_ICON.interrupted;
   }
-  if (record && record.manuallyNeedsAttention) return STATUS_ICON.done;
   if (status === 'done' && !readyWasAcknowledged(record)) return STATUS_ICON.done;
 
   const recentMinutes = Math.max(1, finiteNumber(options.recentMinutes, 30));

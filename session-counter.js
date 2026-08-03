@@ -13,7 +13,6 @@ function readyNeedsAttention(record) {
 function sessionNeedsAttention(record) {
   if (!record) return false;
   if (sessionPaneSummary(record).attention > 0) return true;
-  if (record.manuallyNeedsAttention) return true;
   if (record.status === 'waiting' || record.status === 'error') return true;
   if (record.status === 'interrupted') return !interruptionWasAcknowledged(record);
   return readyNeedsAttention(record);

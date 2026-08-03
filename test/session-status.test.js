@@ -38,14 +38,12 @@ test('keeps an unseen completed answer green until its ready event is acknowledg
   assert.equal(terminalStatusIcon(record, { now: 1000 }), '🟨');
 });
 
-test('a manual attention marker turns an idle session green', () => {
+test('legacy manual attention markers no longer override idle age', () => {
   const record = {
     status: 'idle',
     manuallyNeedsAttention: true,
     lastAgentActivityAt: 1,
   };
-  assert.equal(terminalStatusIcon(record, { now: 10 * HOUR }), '🟢');
-  record.manuallyNeedsAttention = false;
   assert.equal(terminalStatusIcon(record, { now: 10 * HOUR }), '🟫');
 });
 

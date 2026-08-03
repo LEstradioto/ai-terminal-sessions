@@ -18,7 +18,6 @@ function restorableAgent(agent) {
     lastActivityAt: Number(agent.lastActivityAt) || 0,
     readyAt: Number(agent.readyAt) || 0,
     lastAcknowledgedReadyAt: Number(agent.lastAcknowledgedReadyAt) || 0,
-    manuallyNeedsAttention: Boolean(agent.manuallyNeedsAttention),
     interruptedAt: Number(agent.interruptedAt) || 0,
     lastAcknowledgedInterruptedAt: Number(agent.lastAcknowledgedInterruptedAt) || 0,
   };

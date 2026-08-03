@@ -36,9 +36,17 @@ function mergeObservedAgent(previous, observed, now = Date.now()) {
   const turn = mergeTurnTiming(prior, observed);
   const previousActivity = Number(prior.lastActivityAt) || 0;
   const currentActivity = Number(observed.lastActivityAt) || 0;
-  const newCompletion = turn.turnCompletedAt > (Number(prior.turnCompletedAt) || 0);
+  const priorCompletion = Number(prior.turnCompletedAt) || 0;
+  const completionWasBackfilled = related
+    && prior.status === 'done'
+    && !priorCompletion
+    && currentActivity <= previousActivity;
+  const newCompletion = turn.turnCompletedAt > priorCompletion && !completionWasBackfilled;
   const newlyReady = observed.status === 'done' && (
-    newCompletion || !Number(prior.readyAt) || currentActivity > previousActivity
+    newCompletion
+    || currentActivity > previousActivity
+    || (!related && !Number(prior.readyAt))
+    || (prior.status !== 'done' && !Number(prior.readyAt))
   );
   const newlyInterrupted = observed.status === 'interrupted' && (
     !Number(prior.interruptedAt) || currentActivity > previousActivity
@@ -52,14 +60,15 @@ function mergeObservedAgent(previous, observed, now = Date.now()) {
     ...prior,
     ...observed,
     ...turn,
-    readyAt: newlyReady ? now : Number(prior.readyAt) || 0,
+    readyAt: newlyReady
+      ? turn.turnCompletedAt || currentActivity || now
+      : Number(prior.readyAt) || 0,
     lastAcknowledgedReadyAt: Number(prior.lastAcknowledgedReadyAt) || 0,
     status: observed.status === 'interrupted' && interruptionAcknowledged
       ? 'idle'
       : observed.status,
     interruptedAt,
     lastAcknowledgedInterruptedAt: Number(prior.lastAcknowledgedInterruptedAt) || 0,
-    manuallyNeedsAttention: Boolean(prior.manuallyNeedsAttention),
     newlyReady,
     newlyInterrupted,
   };
@@ -115,7 +124,6 @@ function positiveNumber(value) {
 
 function agentNeedsAttention(agent) {
   if (!agent) return false;
-  if (agent.manuallyNeedsAttention) return true;
   if (agent.status === 'waiting' || agent.status === 'error') return true;
   if (agent.status === 'interrupted') {
     return Number(agent.lastAcknowledgedInterruptedAt || 0) < Number(agent.interruptedAt || 0);

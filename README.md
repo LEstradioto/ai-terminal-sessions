@@ -25,7 +25,7 @@ Open a terminal the normal VS Code way, run Codex or Claude Code, and keep worki
 | Normal terminals | Open a terminal as usual, then run Codex or Claude Code |
 | Workspace restore | Restores tabs, names, order, panes, and AI sessions after reloads or restarts |
 | Live processes | Keeps terminals running when VS Code closes; after a computer restart, agents resume and other panes return as shells |
-| Status and timing | Shows `○⠋` working, `🟠` permission, `🟢` ready, `🔴` interrupted, idle age colors `🟨` → `🟧` → `🟫`, and per-prompt turn time |
+| Status and timing | Shows `○⠋` working, `🟠` permission, `🟢` ready until the next reply, `🔴` interrupted, idle age colors `🟨` → `🟧` → `🟫`, and per-prompt turn time |
 | Session Monitor | Pins four ANSI-colored, auto-scrolling previews in the native bottom panel |
 | Recovery | Autosaves the visible draft and restores closed tabs one at a time from local history |
 | Panes | Restores layout, directory, focus, and agent sessions for helpers such as servers, logs, tests, or CI |
@@ -82,11 +82,13 @@ I have not tested Intel Macs, other operating systems, shells, terminal configur
 
 On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. The mouse wheel uses tmux history in Codex and regular shells, but stays with Claude Code's own scroll UI inside Claude. The keyboard shortcut always opens tmux history.
 
-Click and drag selects text, copies it to the macOS clipboard on release, and immediately returns to live output. Double click copies one word. Keyboard selection uses `v`, arrow keys, and `y` to copy. While scrollback or keyboard copy mode is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
+Click and drag selects text, copies it to the macOS clipboard on release, and immediately returns to live output. Empty selections leave the existing clipboard untouched. Double click copies one word. Keyboard selection uses `v`, arrow keys, and `y` to copy. While scrollback or keyboard copy mode is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
 
 The monitor shortcut opens and focuses the panel, or closes it when the monitor already has focus. Use the arrow keys to move through cards, `Enter` to open the selected session, and `Escape` to return to the previous terminal without closing the monitor.
 
-Each tab keeps the standard tmux prefix, `Ctrl+B`. Useful follow-up keys are `%` to split right, `"` to split down, arrow keys to change pane, `o` for the next pane, `z` to zoom, `x` to close, `[` for scrollback, and `?` for the full list. The tab context menu exposes the same pane actions while you learn the bindings.
+Common commands such as rename, session switching, and pane actions are directly available from the Command Palette. Right click inside a managed terminal for tab-specific actions such as icon, draft recovery, monitor pinning, pane role, and removal. Rare recovery and maintenance commands stay in one flat **AI Sessions: More Actions...** list.
+
+Each tab keeps the standard tmux prefix, `Ctrl+B`. Useful follow-up keys are `%` to split right, `"` to split down, arrow keys to change pane, `o` for the next pane, `z` to zoom, `x` to close, `[` for scrollback, and `?` for the full list. The terminal context menu exposes the same pane actions while you learn the bindings.
 
 ## Close, restore, and history
 

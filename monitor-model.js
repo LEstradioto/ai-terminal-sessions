@@ -209,22 +209,21 @@ function previewChangedAt(previous, preview, fallbackActivityAt, now = Date.now(
   return previous.preview !== preview ? now : Number(previous.changedAt) || 0;
 }
 
-function statusTone(status, acknowledged, manuallyNeedsAttention = false) {
+function statusTone(status, acknowledged) {
   if (status === 'running') return 'working';
   if (status === 'waiting') return 'waiting';
   if (status === 'interrupted' || status === 'error') return 'error';
-  if (manuallyNeedsAttention) return 'ready';
   if (status === 'done' && !acknowledged) return 'ready';
   return 'idle';
 }
 
-function statusLabel(status, acknowledged, manuallyNeedsAttention = false) {
+function statusLabel(status, acknowledged) {
   return {
     running: 'WORKING',
     waiting: 'WAITING',
     interrupted: 'STOPPED',
     error: 'ERROR',
-  }[status] || (manuallyNeedsAttention || (status === 'done' && !acknowledged) ? 'READY' : 'IDLE');
+  }[status] || (status === 'done' && !acknowledged ? 'READY' : 'IDLE');
 }
 
 function activeProcess(record) {
