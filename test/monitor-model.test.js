@@ -98,7 +98,8 @@ test('webview HTML has a strict CSP and escapes workspace text', () => {
   assert.match(html, /class="monitor-label">Session Monitor</);
   assert.doesNotMatch(html, /<unsafe & workspace>/);
   assert.match(html, /prefers-reduced-motion/);
-  assert.match(html, /max-width: 480px/);
+  assert.match(html, /max-width: 580px/);
+  assert.match(html, /repeat\(auto-fit, minmax\(260px, 1fr\)\)/);
   assert.match(html, /font-size: 8\.75px/);
   assert.match(html, /min-height: 34px/);
   assert.match(html, />Session Monitor<\/span>/);
@@ -107,6 +108,13 @@ test('webview HTML has a strict CSP and escapes workspace text', () => {
   assert.match(html, /article\.addEventListener\('click'/);
   assert.doesNotMatch(html, /article\.addEventListener\('dblclick'/);
   assert.match(html, /article\.tabIndex = 0/);
+  assert.match(html, /event\.data\.type === 'focus-monitor'/);
+  assert.match(html, /type: 'focus-state'/);
+  assert.match(html, /event\.key === 'ArrowLeft'/);
+  assert.match(html, /event\.key === 'ArrowRight'/);
+  assert.match(html, /event\.key === 'Escape'/);
+  assert.match(html, /type: 'return'/);
+  assert.match(html, /card\.focus\(\{ preventScroll: true \}\)/);
   assert.match(html, /inside a managed terminal/);
   assert.match(html, /Terminal output for/);
   assert.match(html, /function xtermColor/);

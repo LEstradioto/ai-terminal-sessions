@@ -130,7 +130,7 @@ function monitorHtml(webview, workspaceName) {
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
       gap: 6px;
     }
 
@@ -166,6 +166,11 @@ function monitorHtml(webview, workspaceName) {
 
     .card:focus-within, .card:hover {
       border-color: color-mix(in srgb, var(--tone) 64%, var(--border));
+    }
+
+    .card:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -2px;
     }
 
     .card-header {
@@ -304,7 +309,7 @@ function monitorHtml(webview, workspaceName) {
       100% { box-shadow: 0 3px 10px color-mix(in srgb, #000 10%, transparent); }
     }
 
-    @media (max-width: 480px) {
+    @media (max-width: 580px) {
       .shell { padding: 6px; }
       .masthead { margin: -6px -6px 6px; padding: 0 6px; }
       .grid { grid-template-columns: 1fr; }
@@ -330,6 +335,8 @@ function monitorHtml(webview, workspaceName) {
     const grid = document.getElementById('grid');
     const count = document.getElementById('count');
     const updated = document.getElementById('updated');
+    let activeCardId;
+    let focusRequested = false;
     vscode.setState({ open: true });
 
     function emptyState() {
@@ -431,6 +438,7 @@ function monitorHtml(webview, workspaceName) {
       const article = document.createElement('article');
       article.className = 'card';
       article.tabIndex = 0;
+      article.dataset.id = session.id;
       article.setAttribute('aria-label', 'Open terminal ' + session.title);
       article.dataset.tone = session.tone;
       article.dataset.fresh = String(Boolean(session.fresh));
@@ -465,13 +473,40 @@ function monitorHtml(webview, workspaceName) {
 
       const screen = terminalScreen(session);
       article.append(header, screen);
+      article.addEventListener('focus', () => { activeCardId = session.id; });
       article.addEventListener('click', () => vscode.postMessage({ type: 'focus', id: session.id }));
       article.addEventListener('keydown', (event) => {
+        if (event.target !== article) return;
         if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
         vscode.postMessage({ type: 'focus', id: session.id });
       });
       return article;
+    }
+
+    function cards() {
+      return Array.from(grid.querySelectorAll('.card'));
+    }
+
+    function focusCard(id, fallbackIndex = 0) {
+      const items = cards();
+      if (!items.length) return false;
+      const matching = items.find((card) => card.dataset.id === id);
+      const card = matching || items[Math.max(0, Math.min(items.length - 1, fallbackIndex))];
+      activeCardId = card.dataset.id;
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      vscode.postMessage({ type: 'focus-state', focused: true });
+      return true;
+    }
+
+    function moveCard(direction) {
+      const items = cards();
+      if (!items.length) return;
+      const focused = document.activeElement && document.activeElement.closest('.card');
+      const current = Math.max(0, items.indexOf(focused));
+      const next = (current + direction + items.length) % items.length;
+      focusCard(items[next].dataset.id, next);
     }
 
     function render(payload) {
@@ -484,11 +519,39 @@ function monitorHtml(webview, workspaceName) {
         document.querySelectorAll('.screen').forEach((screen) => {
           screen.scrollTop = screen.scrollHeight;
         });
+        if (focusRequested || document.hasFocus()) {
+          focusRequested = false;
+          focusCard(activeCardId);
+        }
       });
     }
 
     window.addEventListener('message', (event) => {
-      if (event.data && event.data.type === 'snapshot') render(event.data);
+      if (!event.data) return;
+      if (event.data.type === 'snapshot') render(event.data);
+      if (event.data.type === 'focus-monitor') {
+        focusRequested = true;
+        requestAnimationFrame(() => {
+          if (focusCard(activeCardId)) focusRequested = false;
+        });
+      }
+    });
+    window.addEventListener('focus', () => vscode.postMessage({ type: 'focus-state', focused: true }));
+    window.addEventListener('blur', () => vscode.postMessage({ type: 'focus-state', focused: false }));
+    document.addEventListener('keydown', (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        vscode.postMessage({ type: 'return' });
+        return;
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveCard(-1);
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveCard(1);
+      }
     });
     vscode.postMessage({ type: 'ready' });
   </script>

@@ -28,45 +28,66 @@ test('restore targets the main window and recovers stranded auxiliary editors', 
   assert.ok(restoreTabs.indexOf('await this.ensureSession(record)') < restoreTabs.indexOf('this.openRecord(record, true)'));
 });
 
-test('serialized monitor keeps its native auxiliary window bounds', () => {
-  const serializerStart = source.indexOf('registerWebviewPanelSerializer(MONITOR_VIEW_TYPE');
+test('Session Monitor uses a native panel view and removes legacy floating panels', () => {
+  const providerStart = source.indexOf('registerWebviewViewProvider(MONITOR_VIEW_ID');
+  const providerEnd = source.indexOf('registerWebviewPanelSerializer(', providerStart);
+  const serializerStart = source.indexOf('registerWebviewPanelSerializer(LEGACY_MONITOR_VIEW_TYPE');
   const serializerEnd = source.indexOf('vscode.window.onDidOpenTerminal', serializerStart);
-  const restoreStart = source.indexOf('  async restoreSerializedMonitor(');
-  const restoreEnd = source.indexOf('\n  async loadState()', restoreStart);
+  const migrationStart = source.indexOf('  async disposeLegacyMonitor(');
+  const migrationEnd = source.indexOf('\n  async loadState()', migrationStart);
+  assert.notEqual(providerStart, -1);
+  assert.notEqual(providerEnd, -1);
   assert.notEqual(serializerStart, -1);
   assert.notEqual(serializerEnd, -1);
-  assert.notEqual(restoreStart, -1);
-  assert.notEqual(restoreEnd, -1);
+  assert.notEqual(migrationStart, -1);
+  assert.notEqual(migrationEnd, -1);
 
+  const provider = source.slice(providerStart, providerEnd);
   const serializer = source.slice(serializerStart, serializerEnd);
-  const restore = source.slice(restoreStart, restoreEnd);
-  assert.match(serializer, /this\.restoreSerializedMonitor\(panel\)/);
-  assert.doesNotMatch(serializer, /panel\.dispose\(\)/);
-  assert.match(restore, /this\.attachMonitorPanel\(panel\)/);
-  assert.match(restore, /this\.workbench\.switchToMainWindow\(\)/);
+  const migration = source.slice(migrationStart, migrationEnd);
+  assert.match(provider, /this\.resolveMonitorView\(view\)/);
+  assert.match(provider, /retainContextWhenHidden: true/);
+  assert.match(serializer, /this\.disposeLegacyMonitor\(panel\)/);
+  assert.match(migration, /panel\.dispose\(\)/);
+  assert.match(migration, /this\.workbench\.switchToMainWindow\(\)/);
 });
 
-test('healthy manual restore leaves a floating monitor in place', () => {
+test('manual restore leaves the native monitor panel out of editor recovery', () => {
   const start = source.indexOf('  async restoreTabsImpl(');
   const end = source.indexOf('\n  async showSessionHistory(', start);
   const restore = source.slice(start, end);
-  assert.match(restore, /!this\.monitorPanel \|\| this\.hasSuspiciousTerminalEditors\(\)/);
+  const recoveryStart = restore.indexOf('if (recoverAuxiliaryEditors)');
+  const recoveryEnd = restore.indexOf('if (force && !this.records.size)', recoveryStart);
+  const recovery = restore.slice(recoveryStart, recoveryEnd);
+  assert.match(restore, /force && this\.hasSuspiciousTerminalEditors\(\)/);
   assert.match(restore, /if \(recoverAuxiliaryEditors\)/);
-  assert.match(restore, /kept healthy monitor window in place with saved bounds/);
+  assert.match(recovery, /this\.workbench\.restoreEditorsToMainWindow\(\)/);
+  assert.match(recovery, /this\.workbench\.switchToMainWindow\(\)/);
+  assert.equal((restore.match(/this\.workbench\.switchToMainWindow\(\)/g) || []).length, 1);
+  assert.doesNotMatch(restore, /monitorPanel|monitorFloating|floatMonitorPanel/);
 });
 
-test('monitor toggle preserves the auxiliary window instead of disposing it', () => {
+test('monitor toggle opens and closes the native bottom panel', () => {
   const toggleStart = source.indexOf('  async toggleMonitor()');
   const toggleEnd = source.indexOf('\n  async openMonitor()', toggleStart);
   const toggle = source.slice(toggleStart, toggleEnd);
-  assert.match(toggle, /this\.monitorHidden \? this\.showMonitor\(\) : this\.hideMonitor\(\)/);
-  assert.doesNotMatch(toggle, /this\.monitorPanel\.dispose\(\)/);
+  assert.match(toggle, /this\.monitorView\?\.visible && this\.monitorFocused/);
+  assert.match(toggle, /return this\.hideMonitor\(\)/);
+  assert.match(toggle, /return this\.focusMonitor\(\)/);
+  assert.match(toggle, /view\.show\(false\)/);
+  assert.match(toggle, /type: 'focus-monitor'/);
 
   const hideStart = source.indexOf('  async hideMonitor()');
-  const hideEnd = source.indexOf('\n  async showMonitor()', hideStart);
+  const hideEnd = source.indexOf('\n  async openMonitor(', hideStart);
   const hide = source.slice(hideStart, hideEnd);
-  assert.match(hide, /this\.workbench\.hidePanel\(panel\)/);
-  assert.match(hide, /this\.setMonitorHidden\(true\)/);
+  assert.match(hide, /workbench\.action\.closePanel/);
+  assert.match(hide, /this\.showTerminalIfLive\(returnTerminal\)/);
+
+  const openStart = source.indexOf('  async openMonitorImpl(');
+  const openEnd = source.indexOf('\n  async resolveMonitorView(', openStart);
+  const open = source.slice(openStart, openEnd);
+  assert.match(open, /MONITOR_CONTAINER_COMMAND/);
+  assert.match(open, /this\.monitorView\.show\(Boolean\(preserveTerminalFocus\)\)/);
 
   const focusStart = source.indexOf('  showTerminalIfLive(terminal)');
   const focusEnd = source.indexOf('\n  startMonitorRefresh()', focusStart);
@@ -107,16 +128,28 @@ test('changing an icon replaces only the terminal bridge and replays its pane', 
   assert.match(appearance, /await pty\.replayVisiblePane\(\)/);
 });
 
-test('automatic icons refresh only for the active terminal after startup', () => {
-  const start = source.indexOf('  async ensureAutomaticTerminalAppearance(record)');
-  const end = source.indexOf('\n  async reopenTerminalAppearance(record)', start);
+test('automatic icon detection defers visual replacement until a safe recreation', () => {
+  assert.doesNotMatch(source, /ensureAutomaticTerminalAppearance|appearanceRefreshes/);
+  const start = source.indexOf('  async scanRecord(');
+  const end = source.indexOf('\n  async detectAgent(', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
-  const automatic = source.slice(start, end);
-  assert.match(automatic, /!this\.started \|\| this\.restoringTabs/);
-  assert.match(automatic, /active\.id !== record\.id/);
-  assert.match(automatic, /pty\.iconPreset === normalizeIconPreset\(record\.iconPreset\)/);
-  assert.match(automatic, /this\.appearanceRefreshes/);
+  const scan = source.slice(start, end);
+  assert.match(scan, /record\.detectedIconPreset = detectedIconPreset/);
+  assert.match(scan, /record\.iconPreset = detectedIconPreset/);
+  assert.doesNotMatch(scan, /reopenTerminalAppearance/);
+});
+
+test('terminal close restores focus to the editor VS Code selected', () => {
+  const eventStart = source.indexOf('vscode.window.onDidCloseTerminal((terminal) =>');
+  const eventEnd = source.indexOf('vscode.window.tabGroups.onDidChangeTabs', eventStart);
+  const event = source.slice(eventStart, eventEnd);
+  const focusStart = source.indexOf('  async focusAfterTerminalClose(');
+  const focusEnd = source.indexOf('\n  recordForTerminal(', focusStart);
+  const focus = source.slice(focusStart, focusEnd);
+  assert.match(event, /pendingAction !== 'keep'/);
+  assert.match(event, /this\.focusAfterTerminalClose\(terminal\)/);
+  assert.match(focus, /workbench\.action\.focusActiveEditorGroup/);
 });
 
 test('manual restore recovers live tmux sessions from the latest saved snapshot', () => {
@@ -142,15 +175,19 @@ test('private tmux sessions handle mouse wheel scrolling', () => {
   const end = source.indexOf('\n  async configurePanePresentation(', start);
   const configure = source.slice(start, end);
   assert.match(configure, /'mouse', 'on'/);
+  assert.match(configure, /'WheelUpPane', 'copy-mode', '-e', '-t', '='/);
   assert.doesNotMatch(configure, /'mouse', 'off'/);
 });
 
-test('tmux copy mode keeps mouse selection visible and copies it on macOS', () => {
+test('tmux click and drag copies text and immediately returns to live output', () => {
   const start = source.indexOf('  async configureTmuxSession(');
   const end = source.indexOf('\n  async configurePanePresentation(', start);
   const configure = source.slice(start, end);
   assert.match(configure, /'copy-command', '\/usr\/bin\/pbcopy'/);
-  assert.match(configure, /'MouseDragEnd1Pane',[\s\S]*?'copy-pipe-no-clear'/);
+  assert.match(configure, /'MouseDrag1Pane', 'copy-mode', '-M', '-t', '='/);
+  assert.match(configure, /'DoubleClick1Pane',[\s\S]*?'select-word',[\s\S]*?'copy-pipe-and-cancel'/);
+  assert.match(configure, /'MouseDragEnd1Pane',[\s\S]*?'copy-pipe-and-cancel'/);
+  assert.doesNotMatch(configure, /M-MouseDrag1Pane|copy-pipe-no-clear/);
   assert.match(configure, /'copy-mode', 'v', 'send-keys', '-X', 'begin-selection'/);
   assert.match(configure, /'copy-mode', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel'/);
 });

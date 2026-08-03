@@ -12,10 +12,6 @@ Open a terminal the normal VS Code way, run Codex or Claude Code, and keep worki
 
 [Watch the 45-second demo](media/ai-terminal-sessions-demo.mp4)
 
-![A compact Session Monitor pinned over the main VS Code window](media/session-monitor.gif)
-
-*Session Monitor keeps up to four live terminals visible while you move through the main tabs.*
-
 ## Features
 
 | Feature | What it does |
@@ -24,7 +20,7 @@ Open a terminal the normal VS Code way, run Codex or Claude Code, and keep worki
 | Per-workspace restore | Restores that workspace's tabs, names, order, pane layouts, and AI sessions after VS Code or computer restarts |
 | Persistent processes | Keeps terminals alive through VS Code reloads; after a computer restart, agents resume and generic panes return as shells |
 | Status at a glance | Uses `○⠋` working, `🟠` permission, `🟢` ready, `🔴` interrupted, and `🟨` → `🟧` → `🟫` as sessions age |
-| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in a compact floating window |
+| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in the native bottom panel |
 | Drafts and history | Autosaves the visible composer and previews or restores one closed tab at a time |
 | Restored panes | Keeps one agent plus optional server, logs, tests, or CI panes; restores layout, directory, focus, and agent sessions |
 | Smart labels | Adds short lowercase names, automatic process icons, and optional manual colors |
@@ -73,13 +69,15 @@ I have not tested Intel Macs, other operating systems, shells, terminal configur
 | Action | Default | My setup |
 |---|---:|---:|
 | Pin active tab | `Cmd+Option+Down` | `Hyper+Down` |
-| Toggle monitor | `Cmd+Option+Up` | `Hyper+Up` |
+| Focus or toggle monitor | `Cmd+Option+Up` | `Hyper+Up` |
 | Scroll tmux history | `Shift+Page Up/Down` | Same |
 | Move between tabs | Your VS Code binding | `Hyper+Left/Right` |
 
 "Hyper" is my macOS Hyper key mapped to `Cmd+Option`. The extension does not register it.
 
-On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. Copy mode uses `v` to begin selection, arrow keys to extend it, and `y` to copy. Mouse selection also enters copy mode and keeps the selected text visible after copying. While it is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
+On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. The mouse wheel enters tmux copy mode consistently, including inside Codex. Click and drag selects text, copies it to the macOS clipboard on release, and immediately returns to live output. Double click copies one word. Keyboard selection uses `v`, arrow keys, and `y` to copy. While scrollback or keyboard copy mode is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
+
+The monitor shortcut opens and focuses the panel, or closes it when the monitor already has focus. Use the arrow keys to move through cards, `Enter` to open the selected session, and `Escape` to return to the previous terminal without closing the monitor.
 
 Each tab keeps the standard tmux prefix, `Ctrl+B`. Useful follow-up keys are `%` to split right, `"` to split down, arrow keys to change pane, `o` for the next pane, `z` to zoom, `x` to close, `[` for scrollback, and `?` for the full list. The tab context menu exposes the same pane actions while you learn the bindings.
 
@@ -98,7 +96,7 @@ Before moving a workspace to another disk, use **Prepare workspace move...**. Th
 
 ## Config and privacy
 
-The public settings cover close behavior, cold restore, editor or panel placement, drafts, the monitor, notifications, and executable paths. The defaults are meant to work without setup.
+The public settings cover close behavior, cold restore, editor or panel placement, drafts, notifications, and executable paths. The defaults are meant to work without setup.
 
 There is no telemetry or hosted service. State, drafts, previews, and history stay local. **Rename with AI** runs only when requested and sends at most two recent user messages to the selected Codex, Claude, or VS Code provider. Choose the deterministic `local` provider to avoid model calls.
 
@@ -113,7 +111,7 @@ Before uninstalling, choose **AI Sessions: More Actions...**, then **Stop all ma
 - One tmux session and one tmux window belong to each tab. A tab may contain several panes.
 - tmux owns managed scrollback, so the native VS Code scrollbar does not represent its history.
 - Generic processes survive VS Code restarts but not machine restarts or a prepared workspace move. Their panes return as shells and commands are not rerun.
-- The floating monitor depends on optional VS Code workbench capabilities and may fall back to a normal editor.
+- Session Monitor lives in VS Code's native bottom panel beside Problems, Output, and Terminal.
 - macOS can attribute access from a long-lived terminal child process to VS Code. If the repeated "access data from other apps" prompt appears, inspect the responsible binary before granting broader permissions. See [Troubleshooting](docs/troubleshooting.md#macos-keeps-asking-to-access-data-from-other-apps).
 - The PTY bridge uses the compatible `node-pty` bundled with the tested VS Code build.
 

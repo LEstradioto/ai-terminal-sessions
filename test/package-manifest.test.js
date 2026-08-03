@@ -13,7 +13,6 @@ const PUBLIC_SETTINGS = [
   'aiTerminalSessions.defaultLocation',
   'aiTerminalSessions.renameProvider',
   'aiTerminalSessions.draftRecovery',
-  'aiTerminalSessions.monitorAlwaysOnTop',
   'aiTerminalSessions.notifyWhenReady',
   'aiTerminalSessions.closeBehavior',
   'aiTerminalSessions.executables',
@@ -28,6 +27,18 @@ test('keeps the public configuration focused on workflow decisions', () => {
     codex: 'codex',
     claude: 'claude',
   });
+});
+
+test('contributes the Session Monitor as a bottom panel view', () => {
+  const container = manifest.contributes.viewsContainers.panel.find(
+    (item) => item.id === 'aiTerminalSessionsPanel',
+  );
+  const view = manifest.contributes.views.aiTerminalSessionsPanel.find(
+    (item) => item.id === 'aiTerminalSessions.sessionMonitor',
+  );
+  assert.equal(container.title, 'Session Monitor');
+  assert.equal(container.icon, 'media/panel-icon.svg');
+  assert.equal(view.type, 'webview');
 });
 
 test('keeps the Command Palette focused and exposes fast AI rename', () => {

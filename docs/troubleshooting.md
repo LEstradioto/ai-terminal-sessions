@@ -38,19 +38,15 @@ The responsible binary may be different on another machine. Fix that tool or its
 
 Only one extension host may own a workspace at a time. This prevents one window from overwriting state or terminating sessions used by another. Close the first window and wait a few seconds. A stale lease left by a crash expires automatically.
 
-## The floating monitor stays in the main editor
+## Session Monitor does not open
 
-Floating and always-on-top behavior uses optional workbench capabilities in VS Code 1.127. When a capability is unavailable, the monitor intentionally falls back to a normal editor panel. Session persistence and pinning continue to work.
+Run **AI Sessions: Show or Hide Session Monitor** or press `Cmd+Option+Up`. The monitor opens as a native bottom panel beside Problems, Output, and Terminal. Pin at least one managed tab with `Cmd+Option+Down` to give it content.
 
-## The monitor reopens at the default size or position
-
-Hide it with **AI Sessions: Show or Hide Session Monitor** or the monitor shortcut. This keeps the auxiliary window alive and restores the same size and position when you show it again.
-
-The native macOS close button destroys the auxiliary window outside the extension's control. VS Code does not expose that window's bounds through its extension API, so a replacement may use the default size or position. If you already closed it this way, resize the replacement once and use the extension toggle from then on.
+VS Code owns the bottom panel's height, position, and visibility. Those panel layout choices follow the normal workbench behavior instead of being stored by the extension.
 
 ## Tabs named like `db259…` appeared after reload
 
-These are unresolved terminal editor shells serialized by VS Code, not lost tmux sessions. The extension removes shells belonging to the current workspace before recreating its managed tabs. The serialized Session Monitor is kept in its auxiliary window, but focus returns to the main window before terminal restore begins. Run **AI Sessions: Restore Tabs Now** if stale shells from an older build are still open.
+These are unresolved terminal editor shells serialized by VS Code, not lost tmux sessions. The extension removes shells belonging to the current workspace before recreating its managed tabs. A Session Monitor editor serialized by an older release is removed during migration. Run **AI Sessions: Restore Tabs Now** if stale shells from an older build are still open.
 
 ## AI rename falls back to a local title
 

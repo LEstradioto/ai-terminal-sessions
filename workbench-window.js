@@ -1,12 +1,8 @@
 'use strict';
 
 const COMMANDS = Object.freeze({
-  compact: 'workbench.action.enableCompactAuxiliaryWindow',
-  float: 'workbench.action.moveEditorToNewWindow',
   main: 'workbench.action.switchToMainWindow',
   restore: 'workbench.action.restoreEditorsToMainWindow',
-  top: 'workbench.action.enableWindowAlwaysOnTop',
-  untop: 'workbench.action.disableWindowAlwaysOnTop',
 });
 
 class WorkbenchWindowAdapter {
@@ -47,46 +43,6 @@ class WorkbenchWindowAdapter {
 
   async restoreEditorsToMainWindow() {
     return this.run(COMMANDS.restore);
-  }
-
-  async focusPanel(panel) {
-    if (!panel.active) {
-      panel.reveal(this.vscode.ViewColumn.Active, false);
-      await this.wait(80);
-    }
-    return Boolean(panel.active);
-  }
-
-  async showPanel(panel, options = {}) {
-    const available = await this.commandSet();
-    if (!available.has(COMMANDS.main) || !await this.focusPanel(panel)) return false;
-    if (options.alwaysOnTop) await this.run(COMMANDS.top);
-    await this.run(COMMANDS.main, true);
-    return true;
-  }
-
-  async hidePanel(panel) {
-    const available = await this.commandSet();
-    if (!available.has(COMMANDS.main) || !await this.focusPanel(panel)) return false;
-    await this.run(COMMANDS.untop);
-    await this.run(COMMANDS.main, true);
-    return true;
-  }
-
-  async floatPanel(panel, options = {}) {
-    const available = await this.commandSet();
-    if (!available.has(COMMANDS.float) || !available.has(COMMANDS.main)) return false;
-    if (!panel.active) {
-      panel.reveal(this.vscode.ViewColumn.Active, false);
-      await this.wait(80);
-    }
-    if (!panel.active) return false;
-    await this.run(COMMANDS.float, true);
-    await this.wait(280);
-    await this.run(COMMANDS.compact);
-    if (options.alwaysOnTop) await this.run(COMMANDS.top);
-    await this.run(COMMANDS.main, true);
-    return true;
   }
 }
 

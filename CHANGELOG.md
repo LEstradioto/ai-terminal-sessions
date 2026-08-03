@@ -6,7 +6,13 @@ All notable changes to AI Terminal Sessions are documented here.
 
 - Added a short public demo to the README and tightened the product overview around the daily tab workflow.
 - Documented how to identify the child process behind repeated macOS App Data prompts without granting VS Code Full Disk Access.
-- Changed the Session Monitor toggle to hide and reuse its auxiliary window, preserving the user's size and position.
+- Moved Session Monitor into the native VS Code bottom panel beside Problems, Output, and Terminal.
+- Stopped automatic process icon detection from reconnecting a live terminal and flashing its screen.
+- Restored focus to the tab selected by VS Code after a terminal exits or closes.
+- Kept mouse-wheel history inside tmux even when Codex uses its alternate screen.
+- Made normal click and drag select and copy text, then return immediately to live output.
+- Made double click copy one terminal word.
+- Added arrow-key navigation, `Enter`, and `Escape` to the focused Session Monitor.
 - Restored Rename with AI as a fast Command Palette action for the active managed tab.
 - Kept tmux mouse selections visible and copied them directly to the macOS clipboard.
 - Added a visible **Jump to bottom** action while the active pane is paused in tmux copy mode.

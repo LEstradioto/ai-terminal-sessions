@@ -112,8 +112,9 @@ const {
 
 const STATE_KEY = 'aiTerminalSessions.state.v1';
 const PROFILE_ID = 'aiTerminalSessions.profile';
-const MONITOR_VIEW_TYPE = 'aiTerminalSessions.monitor';
-const MONITOR_HIDDEN_KEY = 'aiTerminalSessions.monitorHidden.v1';
+const LEGACY_MONITOR_VIEW_TYPE = 'aiTerminalSessions.monitor';
+const MONITOR_VIEW_ID = 'aiTerminalSessions.sessionMonitor';
+const MONITOR_CONTAINER_COMMAND = 'workbench.view.extension.aiTerminalSessionsPanel';
 const DRAFT_MAX_CAPTURE_MS = 5000;
 const DRAFT_AUTOSAVE_DELAY_MS = 1500;
 const MONITOR_LINES = 12;
@@ -246,7 +247,6 @@ class SessionManager {
     this.terminals = new Map();
     this.pendingCloseActions = new Map();
     this.ensurePromises = new Map();
-    this.appearanceRefreshes = new Map();
     this.codexPidCache = new Map();
     this.codexTranscriptCache = new Map();
     this.codexThreadNames = new Map();
@@ -279,14 +279,14 @@ class SessionManager {
       `archive-${this.workspaceHash}.json`,
     );
     this.relocationStorePath = path.join(this.context.globalStorageUri.fsPath, 'relocations');
-    this.monitorPanel = undefined;
-    this.monitorFloating = false;
-    this.monitorHidden = Boolean(this.context.workspaceState.get(MONITOR_HIDDEN_KEY, false));
+    this.monitorView = undefined;
     this.monitorTimer = undefined;
     this.monitorRefreshing = false;
     this.monitorPreviewCache = new Map();
     this.monitorOpenPromise = undefined;
-    this.serializedMonitorRecoveryPromise = undefined;
+    this.monitorFocused = false;
+    this.monitorReturnTerminal = undefined;
+    this.legacyMonitorRecoveryPromise = undefined;
     this.workspaceStorageId = path.basename(
       (this.context.storageUri && this.context.storageUri.fsPath) || '',
     );
@@ -389,14 +389,15 @@ class SessionManager {
     this.copyModeStatusBar = copyModeStatusBar;
     subscriptions.push(copyModeStatusBar);
     this.updateSessionStatusBar();
-    subscriptions.push(vscode.window.registerWebviewPanelSerializer(MONITOR_VIEW_TYPE, {
+    subscriptions.push(vscode.window.registerWebviewViewProvider(MONITOR_VIEW_ID, {
+      resolveWebviewView: async (view) => this.resolveMonitorView(view),
+    }, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }));
+    subscriptions.push(vscode.window.registerWebviewPanelSerializer(LEGACY_MONITOR_VIEW_TYPE, {
       deserializeWebviewPanel: async (panel) => {
-        // VS Code persists auxiliary window bounds only while the serialized
-        // editor remains attached to that window. Reuse the panel so the
-        // user's size and position survive reload, then return focus to the
-        // main window before terminal restoration creates any editors.
-        this.serializedMonitorRecoveryPromise = this.restoreSerializedMonitor(panel);
-        await this.serializedMonitorRecoveryPromise;
+        this.legacyMonitorRecoveryPromise = this.disposeLegacyMonitor(panel);
+        await this.legacyMonitorRecoveryPromise;
       },
     }));
 
@@ -405,20 +406,28 @@ class SessionManager {
       this.updateSessionStatusBar();
     }));
     subscriptions.push(vscode.window.onDidCloseTerminal((terminal) => {
+      const pendingAction = this.pendingCloseActions.get(terminal);
+      const shouldRestoreFocus = !this.deactivating
+        && pendingAction !== 'keep'
+        && terminal.exitStatus?.reason !== vscode.TerminalExitReason.Shutdown;
       this.closeEventsInFlight += 1;
       this.handleCloseTerminal(terminal)
         .catch((error) => this.log('terminal-close', error))
         .finally(() => {
           this.closeEventsInFlight = Math.max(0, this.closeEventsInFlight - 1);
           this.updateSessionStatusBar();
+          if (shouldRestoreFocus) {
+            setTimeout(() => {
+              this.focusAfterTerminalClose(terminal)
+                .catch((error) => this.log('terminal-close-focus', error));
+            }, 80);
+          }
         });
     }));
     subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => {
       this.scheduleTabOrderCapture();
       const record = this.activeRecord();
       this.updateManagedTerminalContext(record);
-      this.ensureAutomaticTerminalAppearance(record)
-        .catch((error) => this.log('appearance-auto', error));
       this.updateSessionStatusBar();
     }));
     subscriptions.push(vscode.window.tabGroups.onDidChangeTabGroups(() => {
@@ -441,8 +450,6 @@ class SessionManager {
       this.updateManagedTerminalContext(record);
       this.schedulePersist();
       this.updateSessionStatusBar();
-      this.ensureAutomaticTerminalAppearance(record)
-        .catch((error) => this.log('appearance-auto', error));
     }));
   }
 
@@ -458,7 +465,7 @@ class SessionManager {
       await seedDemo(this);
     }
     await this.closeSerializedTerminalStubs();
-    if (this.serializedMonitorRecoveryPromise) await this.serializedMonitorRecoveryPromise;
+    if (this.legacyMonitorRecoveryPromise) await this.legacyMonitorRecoveryPromise;
     await this.restoreTabs(false);
     if (this.demoMode) await this.waitForDemoSessions();
     await this.scanAll();
@@ -466,8 +473,8 @@ class SessionManager {
     await this.updateMonitorContext();
     this.started = true;
     this.updateSessionStatusBar();
-    if (this.monitorPanel) await this.refreshMonitor();
-    if (this.demoMode && !this.monitorPanel && this.pinnedRecords().length) {
+    if (this.monitorView) await this.refreshMonitor();
+    if (this.demoMode && !this.monitorView && this.pinnedRecords().length) {
       await this.openMonitor();
     }
 
@@ -537,24 +544,17 @@ class SessionManager {
     return staleTabs.length;
   }
 
-  async restoreSerializedMonitor(panel) {
-    this.monitorFloating = true;
-    this.attachMonitorPanel(panel);
+  async disposeLegacyMonitor(panel) {
     try {
-      await delay(80);
-      if (this.monitorHidden) {
-        await this.workbench.hidePanel(panel);
-        this.stopMonitorRefresh();
-        this.output.appendLine('[monitor] restored hidden window with saved bounds');
-      } else {
-        await this.workbench.switchToMainWindow();
-        this.output.appendLine('[monitor] restored serialized window with saved bounds');
+      if (this.hasSuspiciousTerminalEditors()) {
+        await this.workbench.restoreEditorsToMainWindow();
       }
-      if (this.started) await this.refreshMonitor();
+      panel.dispose();
+      await this.workbench.switchToMainWindow();
+      this.output.appendLine('[monitor] removed legacy floating monitor');
     } catch (error) {
-      this.log('monitor-serialized', error);
+      this.log('monitor-legacy', error);
     }
-    return panel;
   }
 
   async loadState() {
@@ -932,7 +932,6 @@ class SessionManager {
       ),
       settling: !this.started
         || this.restoringTabs
-        || this.appearanceRefreshes.size > 0
         || this.closeEventsInFlight > 0,
     });
   }
@@ -1178,9 +1177,8 @@ class SessionManager {
       1800,
     );
 
-    if (pinned && !this.monitorPanel) await this.openMonitor();
-    else if (pinned && this.monitorHidden) await this.showMonitor();
-    if (!pinned && !this.pinnedRecords().length && this.monitorPanel) {
+    if (pinned) await this.openMonitor(true);
+    if (!pinned && !this.pinnedRecords().length && this.monitorView?.visible) {
       await this.hideMonitor();
       return;
     }
@@ -1188,89 +1186,76 @@ class SessionManager {
   }
 
   async toggleMonitor() {
-    if (this.monitorPanel) {
-      return this.monitorHidden ? this.showMonitor() : this.hideMonitor();
-    }
-    await this.openMonitor();
+    if (this.monitorView?.visible && this.monitorFocused) return this.hideMonitor();
+    return this.focusMonitor();
   }
 
-  async setMonitorHidden(hidden) {
-    this.monitorHidden = Boolean(hidden);
-    await this.context.workspaceState.update(MONITOR_HIDDEN_KEY, this.monitorHidden);
+  async focusMonitor() {
+    const returnTerminal = vscode.window.activeTerminal;
+    const activeTab = vscode.window.tabGroups?.activeTabGroup?.activeTab;
+    this.monitorReturnTerminal = activeTab?.input instanceof vscode.TabInputTerminal
+      && returnTerminal && vscode.window.terminals.includes(returnTerminal)
+      ? returnTerminal
+      : undefined;
+    const view = this.monitorView?.visible
+      ? this.monitorView
+      : await this.openMonitor(false);
+    if (!view) return undefined;
+    if (typeof view.show === 'function') view.show(false);
+    await view.webview.postMessage({ type: 'focus-monitor' });
+    return view;
   }
 
   async hideMonitor() {
-    const panel = this.monitorPanel;
-    if (!panel || this.monitorHidden) return panel;
-    if (!this.monitorFloating) {
-      panel.dispose();
-      return undefined;
-    }
-    const returnTerminal = vscode.window.activeTerminal;
-    const hidden = await this.workbench.hidePanel(panel);
-    if (!hidden) return panel;
-    await this.setMonitorHidden(true);
+    const view = this.monitorView;
+    if (!view || !view.visible) return view;
+    const returnTerminal = this.monitorReturnTerminal;
+    await vscode.commands.executeCommand('workbench.action.closePanel');
+    this.monitorFocused = false;
     this.stopMonitorRefresh();
-    this.showTerminalIfLive(returnTerminal);
-    this.output.appendLine('[monitor] hidden without destroying saved bounds');
-    return panel;
-  }
-
-  async showMonitor() {
-    const panel = this.monitorPanel;
-    if (!panel) return this.openMonitor();
-    const returnTerminal = vscode.window.activeTerminal;
-    const shown = this.monitorFloating && await this.workbench.showPanel(panel, {
-      alwaysOnTop: this.config().get('monitorAlwaysOnTop', true),
-    });
-    if (!shown) panel.reveal(undefined, true);
-    await this.setMonitorHidden(false);
-    this.startMonitorRefresh();
-    await this.refreshMonitor();
-    this.showTerminalIfLive(returnTerminal);
-    this.output.appendLine('[monitor] shown with preserved bounds');
-    return panel;
-  }
-
-  async openMonitor() {
-    if (this.monitorPanel) {
-      this.monitorPanel.reveal(undefined, true);
-      this.startMonitorRefresh();
-      await this.refreshMonitor();
-      return this.monitorPanel;
+    if (!this.showTerminalIfLive(returnTerminal)) {
+      await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
     }
+    this.output.appendLine('[monitor] bottom panel hidden');
+    return view;
+  }
+
+  async openMonitor(preserveTerminalFocus = false) {
+    if (this.monitorView?.visible) return this.monitorView;
     if (this.monitorOpenPromise) return this.monitorOpenPromise;
 
-    this.monitorOpenPromise = this.openMonitorImpl().finally(() => {
+    this.monitorOpenPromise = this.openMonitorImpl(preserveTerminalFocus).finally(() => {
       this.monitorOpenPromise = undefined;
     });
     return this.monitorOpenPromise;
   }
 
-  async openMonitorImpl() {
-    await this.setMonitorHidden(false);
+  async openMonitorImpl(preserveTerminalFocus) {
     const returnTerminal = vscode.window.activeTerminal;
-    const showOptions = vscode.ViewColumn.Active;
-    const panel = vscode.window.createWebviewPanel(
-      MONITOR_VIEW_TYPE,
-      `Session Monitor · ${getWorkspaceName()}`,
-      showOptions,
-      { enableScripts: true, retainContextWhenHidden: false },
-    );
-    this.attachMonitorPanel(panel);
+    if (this.monitorView && typeof this.monitorView.show === 'function') {
+      this.monitorView.show(Boolean(preserveTerminalFocus));
+    } else {
+      await vscode.commands.executeCommand(MONITOR_CONTAINER_COMMAND);
+      await waitFor(() => Boolean(this.monitorView), 1200, 25);
+    }
+    const view = this.monitorView;
+    if (!view) {
+      vscode.window.showErrorMessage('The Session Monitor panel could not be opened.');
+      return undefined;
+    }
+    this.startMonitorRefresh();
     await this.refreshMonitor();
-
-    this.monitorFloating = await this.floatMonitorPanel(panel, returnTerminal);
-    return panel;
+    if (preserveTerminalFocus) this.showTerminalIfLive(returnTerminal);
+    this.output.appendLine('[monitor] bottom panel shown');
+    return view;
   }
 
-  attachMonitorPanel(panel) {
-    if (this.monitorPanel && this.monitorPanel !== panel) this.monitorPanel.dispose();
-    this.monitorPanel = panel;
-    panel.webview.options = { enableScripts: true };
-    panel.webview.html = monitorHtml(panel.webview, getWorkspaceName());
+  async resolveMonitorView(view) {
+    this.monitorView = view;
+    view.webview.options = { enableScripts: true };
+    view.webview.html = monitorHtml(view.webview, getWorkspaceName());
 
-    panel.webview.onDidReceiveMessage((message) => {
+    view.webview.onDidReceiveMessage((message) => {
       if (!message || this.deactivating) return;
       if (message.type === 'ready') {
         this.refreshMonitor().catch((error) => this.log('monitor-ready', error));
@@ -1279,50 +1264,29 @@ class SessionManager {
       } else if (message.type === 'unpin') {
         const record = this.records.get(message.id);
         if (record) this.setMonitorPinned(record, false).catch((error) => this.log('monitor-unpin', error));
+      } else if (message.type === 'focus-state') {
+        this.monitorFocused = Boolean(message.focused);
+      } else if (message.type === 'return') {
+        this.returnFromMonitor().catch((error) => this.log('monitor-return', error));
       }
     });
-    panel.onDidChangeViewState(() => {
-      if (panel.visible && !this.monitorHidden) {
+    view.onDidChangeVisibility(() => {
+      if (view.visible) {
         this.startMonitorRefresh();
         this.refreshMonitor().catch((error) => this.log('monitor-visible', error));
       } else {
+        this.monitorFocused = false;
         this.stopMonitorRefresh();
       }
     });
-    panel.onDidDispose(() => {
-      if (this.monitorPanel !== panel) return;
-      this.monitorPanel = undefined;
-      this.monitorFloating = false;
+    view.onDidDispose(() => {
+      if (this.monitorView !== view) return;
+      this.monitorView = undefined;
+      this.monitorFocused = false;
       this.stopMonitorRefresh();
-      if (!this.deactivating) {
-        this.setMonitorHidden(false).catch((error) => this.log('monitor-state', error));
-      }
     });
-    if (!this.monitorHidden) this.startMonitorRefresh();
-  }
-
-  async floatMonitorPanel(panel, returnTerminal) {
-    try {
-      const floated = await this.workbench.floatPanel(panel, {
-        alwaysOnTop: this.config().get('monitorAlwaysOnTop', true),
-      });
-      if (!floated) {
-        this.output.appendLine('[monitor] floating window unavailable; kept in the main editor');
-        vscode.window.setStatusBarMessage(
-          'AI Sessions: floating monitor is unavailable in this VS Code build',
-          5000,
-        );
-        return false;
-      }
-      await delay(80);
-      this.showTerminalIfLive(returnTerminal);
-      this.output.appendLine('[monitor] opened floating compact monitor');
-      return true;
-    } catch (error) {
-      this.log('monitor-float', error);
-      this.showTerminalIfLive(returnTerminal);
-      return false;
-    }
+    if (view.visible) this.startMonitorRefresh();
+    if (this.started) await this.refreshMonitor();
   }
 
   showTerminalIfLive(terminal) {
@@ -1336,9 +1300,15 @@ class SessionManager {
     }
   }
 
+  async returnFromMonitor() {
+    this.monitorFocused = false;
+    if (this.showTerminalIfLive(this.monitorReturnTerminal)) return;
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+  }
+
   startMonitorRefresh() {
-    if (this.monitorHidden || this.monitorTimer || !this.monitorPanel
-      || !this.monitorPanel.visible || this.deactivating) return;
+    if (this.monitorTimer || !this.monitorView
+      || !this.monitorView.visible || this.deactivating) return;
     this.monitorTimer = setInterval(() => {
       this.refreshMonitor().catch((error) => this.log('monitor-refresh', error));
     }, MONITOR_REFRESH_MS);
@@ -1350,8 +1320,8 @@ class SessionManager {
   }
 
   async refreshMonitor() {
-    const panel = this.monitorPanel;
-    if (this.monitorHidden || !panel || !panel.visible || this.monitorRefreshing || this.deactivating) return;
+    const view = this.monitorView;
+    if (!view || !view.visible || this.monitorRefreshing || this.deactivating) return;
     this.monitorRefreshing = true;
     try {
       const now = Date.now();
@@ -1386,8 +1356,8 @@ class SessionManager {
         };
       }));
 
-      if (this.monitorPanel === panel) {
-        await panel.webview.postMessage({
+      if (this.monitorView === view) {
+        await view.webview.postMessage({
           type: 'snapshot',
           sessions,
           updated: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -1402,8 +1372,7 @@ class SessionManager {
     const record = this.records.get(recordId);
     if (!record) return;
     const terminal = this.terminals.get(record.id) || this.openRecord(record, false);
-    await this.workbench.switchToMainWindow();
-    await delay(60);
+    this.monitorFocused = false;
     terminal.show(false);
   }
 
@@ -1609,34 +1578,18 @@ class SessionManager {
 
   async restoreTabsImpl(force) {
     if (force) this.captureTabOrder();
-    const recoverAuxiliaryEditors = force
-      && (!this.monitorPanel || this.hasSuspiciousTerminalEditors());
-    const floatingMonitor = recoverAuxiliaryEditors && this.monitorPanel
-      ? this.monitorPanel
-      : undefined;
-    if (force && this.monitorPanel && !recoverAuxiliaryEditors) {
-      this.output.appendLine('[restore] kept healthy monitor window in place with saved bounds');
-    }
+    const recoverAuxiliaryEditors = force && this.hasSuspiciousTerminalEditors();
 
     // A terminal editor can survive in an auxiliary window after a workbench
     // reload. Move any stranded editors back before resolving the saved tabs.
     if (recoverAuxiliaryEditors) {
       try {
         await this.workbench.restoreEditorsToMainWindow();
+        await this.workbench.switchToMainWindow();
         await delay(100);
       } catch (error) {
         this.log('restore-main-editors', error);
       }
-    }
-
-    // ViewColumn.Active is scoped to the active VS Code window. Without this,
-    // activation from the serialized monitor creates restored terminals inside
-    // the always-on-top auxiliary window.
-    try {
-      await this.workbench.switchToMainWindow();
-      await delay(80);
-    } catch (error) {
-      this.log('restore-main-window', error);
     }
 
     if (force && !this.records.size) await this.recoverLatestLiveHistorySnapshot();
@@ -1709,10 +1662,7 @@ class SessionManager {
     // may select the tab shell while keeping a different Terminal object active.
     if (preferredTerminal) preferredTerminal.show(false);
     else if (lastTerminal) lastTerminal.show(false);
-    if (floatingMonitor && this.monitorPanel === floatingMonitor) {
-      this.monitorFloating = await this.floatMonitorPanel(floatingMonitor, lastTerminal);
-    }
-    this.output.appendLine(`[restore] ${force ? 'manual' : 'startup'}: ${records.length} tab(s) directed to main window`);
+    this.output.appendLine(`[restore] ${force ? 'manual' : 'startup'}: ${records.length} tab(s) restored`);
     return records.length;
   }
 
@@ -1727,7 +1677,6 @@ class SessionManager {
     const current = this.currentRecordForArchive(entry);
     if (current) {
       const terminal = this.terminals.get(current.id) || this.openRecord(current, false);
-      await this.workbench.switchToMainWindow();
       terminal.show(false);
       entry.lastRestoredAt = Date.now();
       await this.persistSessionArchive();
@@ -1769,7 +1718,6 @@ class SessionManager {
     this.records.set(record.id, record);
     await this.persist('archive-restore');
     try {
-      await this.workbench.switchToMainWindow();
       await this.ensureSession(record);
       const terminal = this.openRecord(record, false);
       terminal.show(false);
@@ -1859,12 +1807,6 @@ class SessionManager {
       return;
     }
 
-    try {
-      await this.workbench.switchToMainWindow();
-      await delay(60);
-    } catch (error) {
-      this.log('history-main-window', error);
-    }
     const items = this.historyQuickPickItems();
     let previewPanel;
     try {
@@ -2250,7 +2192,7 @@ class SessionManager {
         fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
       ]);
     }
-    if (this.monitorPanel && !this.pinnedRecords().length) await this.hideMonitor();
+    if (this.monitorView?.visible && !this.pinnedRecords().length) await this.hideMonitor();
     if (failures.length) {
       vscode.window.showErrorMessage(
         `${failures.length} session(s) could not be terminated. Their recovery state was kept; see the log.`,
@@ -2324,6 +2266,15 @@ class SessionManager {
     // A tmux/server failure is treated as recoverable. The saved tab returns on restore.
     record.bridgeClosedAt = Date.now();
     this.schedulePersist();
+  }
+
+  async focusAfterTerminalClose(closedTerminal) {
+    if (this.deactivating) return;
+    if (vscode.window.activeTerminal === closedTerminal) await delay(40);
+    // Let the workbench choose the next tab, then focus that tab's editor. A
+    // terminal.show() call here could select a different tab from VS Code's
+    // choice when activeTerminal is still catching up with the tab model.
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
   }
 
   recordForTerminal(terminal) {
@@ -2565,24 +2516,6 @@ class SessionManager {
         : `AI Sessions: ${picked.preset.label} icon applied`,
       2500,
     );
-  }
-
-  async ensureAutomaticTerminalAppearance(record) {
-    if (!record || !this.started || this.restoringTabs
-      || normalizeIconMode(record.iconMode, record.iconPreset) !== 'auto') return;
-    const active = this.activeRecord();
-    if (!active || active.id !== record.id) return;
-    const pty = this.ptys.get(record.id);
-    if (!pty || pty.iconPreset === normalizeIconPreset(record.iconPreset)) return;
-    const current = this.appearanceRefreshes.get(record.id);
-    if (current) return current;
-    const refresh = this.reopenTerminalAppearance(record).finally(() => {
-      if (this.appearanceRefreshes.get(record.id) === refresh) {
-        this.appearanceRefreshes.delete(record.id);
-      }
-    });
-    this.appearanceRefreshes.set(record.id, refresh);
-    return refresh;
   }
 
   async reopenTerminalAppearance(record) {
@@ -2939,7 +2872,7 @@ class SessionManager {
     this.cancelDraftCapture(record);
     this.deleteDraftsForRecord(record);
     await Promise.all([this.persist(), this.persistDrafts(), this.updateMonitorContext()]);
-    if (wasPinned && !this.pinnedRecords().length && this.monitorPanel) {
+    if (wasPinned && !this.pinnedRecords().length && this.monitorView?.visible) {
       await this.hideMonitor();
     } else if (wasPinned) {
       await this.refreshMonitor();
@@ -3153,10 +3086,20 @@ class SessionManager {
       'set-option', '-t', record.tmuxSession, 'prefix2', 'None', ';',
       'set-option', '-t', record.tmuxSession, 'mouse', 'on', ';',
       'set-option', '-s', 'copy-command', '/usr/bin/pbcopy', ';',
+      // Keep wheel scrolling inside tmux even when Codex uses the alternate
+      // screen. A normal drag selects and copies, then exits copy mode on
+      // release so a tiny movement cannot leave the terminal paused.
+      'bind-key', '-T', 'root', 'WheelUpPane', 'copy-mode', '-e', '-t', '=', ';',
+      'bind-key', '-T', 'root', 'MouseDrag1Pane', 'copy-mode', '-M', '-t', '=', ';',
+      'bind-key', '-T', 'root', 'DoubleClick1Pane',
+      'select-pane', '-t', '=', '\\;',
+      'copy-mode', '-H', '-t', '=', '\\;',
+      'send-keys', '-X', '-t', '=', 'select-word', '\\;',
+      'send-keys', '-X', '-t', '=', 'copy-pipe-and-cancel', ';',
       'bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane',
-      'send-keys', '-X', 'copy-pipe-no-clear', ';',
+      'send-keys', '-X', 'copy-pipe-and-cancel', ';',
       'bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane',
-      'send-keys', '-X', 'copy-pipe-no-clear', ';',
+      'send-keys', '-X', 'copy-pipe-and-cancel', ';',
       'bind-key', '-T', 'copy-mode', 'v', 'send-keys', '-X', 'begin-selection', ';',
       'bind-key', '-T', 'copy-mode', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel', ';',
       'bind-key', '-T', 'copy-mode-vi', 'v', 'send-keys', '-X', 'begin-selection', ';',
@@ -3435,8 +3378,6 @@ class SessionManager {
     record.fingerprint = fingerprintRecord(record);
     this.refreshPtyName(record);
     if (this.activeRecord()?.id === record.id) this.updateManagedTerminalContext(record);
-    this.ensureAutomaticTerminalAppearance(record)
-      .catch((error) => this.log('appearance-auto', error));
     if (oldPaneCount !== sessionPanes(record).length) {
       this.configurePanePresentation(record).catch((error) => this.log('pane-presentation', error));
     }

@@ -16,14 +16,15 @@ function fakeVscode(commands) {
   };
 }
 
-test('floating monitor degrades without private workbench capabilities', async () => {
+test('legacy window migration degrades without private workbench capabilities', async () => {
   const vscode = fakeVscode([]);
   const adapter = new WorkbenchWindowAdapter(vscode, () => {}, async () => {}, 10);
-  assert.equal(await adapter.floatPanel({ active: true }, { alwaysOnTop: true }), false);
+  assert.equal(await adapter.switchToMainWindow(), false);
+  assert.equal(await adapter.restoreEditorsToMainWindow(), false);
   assert.deepEqual(vscode.executed, []);
 });
 
-test('floating monitor uses optional capabilities only when available', async () => {
+test('legacy window migration calls only the two required workbench commands', async () => {
   const vscode = fakeVscode(Object.values(COMMANDS));
   const adapter = new WorkbenchWindowAdapter(
     vscode,
@@ -31,30 +32,7 @@ test('floating monitor uses optional capabilities only when available', async ()
     (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds === 10 ? 10 : 0)),
     10,
   );
-  assert.equal(await adapter.floatPanel({ active: true }, { alwaysOnTop: true }), true);
-  assert.deepEqual(vscode.executed, [
-    COMMANDS.float, COMMANDS.compact, COMMANDS.top, COMMANDS.main,
-  ]);
-});
-
-test('hides a floating monitor without destroying its auxiliary window', async () => {
-  const vscode = fakeVscode(Object.values(COMMANDS));
-  const panel = {
-    active: false,
-    reveal() { this.active = true; },
-  };
-  const adapter = new WorkbenchWindowAdapter(vscode, () => {}, async () => {}, 10);
-  assert.equal(await adapter.hidePanel(panel), true);
-  assert.deepEqual(vscode.executed, [COMMANDS.untop, COMMANDS.main]);
-});
-
-test('shows the same floating monitor and restores always-on-top', async () => {
-  const vscode = fakeVscode(Object.values(COMMANDS));
-  const panel = {
-    active: false,
-    reveal() { this.active = true; },
-  };
-  const adapter = new WorkbenchWindowAdapter(vscode, () => {}, async () => {}, 10);
-  assert.equal(await adapter.showPanel(panel, { alwaysOnTop: true }), true);
-  assert.deepEqual(vscode.executed, [COMMANDS.top, COMMANDS.main]);
+  assert.equal(await adapter.restoreEditorsToMainWindow(), true);
+  assert.equal(await adapter.switchToMainWindow(), true);
+  assert.deepEqual(vscode.executed, [COMMANDS.restore, COMMANDS.main]);
 });

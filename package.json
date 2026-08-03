@@ -1,7 +1,7 @@
 {
   "name": "ai-terminal-sessions",
   "displayName": "AI Terminal Sessions",
-  "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a floating monitor.",
+  "description": "Persistent VS Code terminal tabs for Codex, Claude Code, servers, and CI. Includes attention states, draft recovery, and a live panel monitor.",
   "version": "0.6.0",
   "publisher": "LEstradioto",
   "author": "Luan Estradioto",
@@ -70,6 +70,24 @@
           "id": "aiTerminalSessions.profile",
           "title": "AI Sessions",
           "icon": "terminal-tmux"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "aiTerminalSessionsPanel",
+          "title": "Session Monitor",
+          "icon": "media/panel-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiTerminalSessionsPanel": [
+        {
+          "type": "webview",
+          "id": "aiTerminalSessions.sessionMonitor",
+          "name": "Live sessions"
         }
       ]
     },
@@ -167,7 +185,7 @@
       },
       {
         "command": "aiTerminalSessions.toggleMonitor",
-        "title": "Show or Hide Session Monitor",
+        "title": "Show, Focus, or Hide Session Monitor",
         "category": "AI Sessions",
         "icon": "$(multiple-windows)"
       },
@@ -431,12 +449,6 @@
           "default": true,
           "order": 40,
           "description": "Locally save the latest non-empty agent composer text for recovery after deletion, reload, or crash."
-        },
-        "aiTerminalSessions.monitorAlwaysOnTop": {
-          "type": "boolean",
-          "default": true,
-          "order": 60,
-          "description": "Keep the floating Session Monitor above other windows when supported."
         },
         "aiTerminalSessions.notifyWhenReady": {
           "type": "boolean",
