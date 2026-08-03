@@ -10,21 +10,26 @@ Open a terminal the normal VS Code way, run Codex or Claude Code, and keep worki
 
 [![Persistent AI sessions running in ordinary VS Code tabs](media/tabs.png)](media/ai-terminal-sessions-demo.mp4)
 
-[Watch the 45-second demo](media/ai-terminal-sessions-demo.mp4)
+*Ordinary VS Code terminal tabs, with workspace-aware names, order, restore, and status.*
+
+![Session Monitor running inside VS Code's native bottom panel](media/session-monitor.png)
+
+*Pin up to four live sessions, watch ANSI output, turn time, and jump back with one click.*
+
+[Watch the 46-second demo](media/ai-terminal-sessions-demo.mp4)
 
 ## Features
 
 | Feature | What it does |
 |---|---|
-| Normal terminal workflow | Open a VS Code terminal and run Codex or Claude Code as usual |
-| Per-workspace restore | Restores that workspace's tabs, names, order, pane layouts, and AI sessions after VS Code or computer restarts |
-| Persistent processes | Keeps terminals alive through VS Code reloads; after a computer restart, agents resume and generic panes return as shells |
-| Status at a glance | Uses `○⠋` working, `🟠` permission, `🟢` ready, `🔴` interrupted, and `🟨` → `🟧` → `🟫` as sessions age |
-| Session Monitor | Pins up to four ANSI-colored, auto-scrolling previews in the native bottom panel |
-| Drafts and history | Autosaves the visible composer and previews or restores one closed tab at a time |
-| Restored panes | Keeps one agent plus optional server, logs, tests, or CI panes; restores layout, directory, focus, and agent sessions |
-| Smart labels | Adds short lowercase names, automatic process icons, and optional manual colors |
-| Terminal UX | Includes 20,000-line history, resize, `Shift+Enter`, multiline paste, and tmux copy mode |
+| Normal terminals | Open a terminal as usual, then run Codex or Claude Code |
+| Workspace restore | Restores tabs, names, order, panes, and AI sessions after reloads or restarts |
+| Live processes | Keeps terminals running when VS Code closes; after a computer restart, agents resume and other panes return as shells |
+| Status and timing | Shows `○⠋` working, `🟠` permission, `🟢` ready, `🔴` interrupted, idle age colors `🟨` → `🟧` → `🟫`, and per-prompt turn time |
+| Session Monitor | Pins four ANSI-colored, auto-scrolling previews in the native bottom panel |
+| Recovery | Autosaves the visible draft and restores closed tabs one at a time from local history |
+| Panes | Restores layout, directory, focus, and agent sessions for helpers such as servers, logs, tests, or CI |
+| Labels and terminal UX | Adds short lowercase names, process icons, 20,000-line history, resize, `Shift+Enter`, multiline paste, and tmux copy mode |
 
 ```text
 Workspace
@@ -75,7 +80,9 @@ I have not tested Intel Macs, other operating systems, shells, terminal configur
 
 "Hyper" is my macOS Hyper key mapped to `Cmd+Option`. The extension does not register it.
 
-On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. The mouse wheel enters tmux copy mode consistently, including inside Codex. Click and drag selects text, copies it to the macOS clipboard on release, and immediately returns to live output. Double click copies one word. Keyboard selection uses `v`, arrow keys, and `y` to copy. While scrollback or keyboard copy mode is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
+On a MacBook, `Page Up/Down` is `Fn+Up/Down`, so keyboard scrolling is `Shift+Fn+Up/Down`. The mouse wheel uses tmux history in Codex and regular shells, but stays with Claude Code's own scroll UI inside Claude. The keyboard shortcut always opens tmux history.
+
+Click and drag selects text, copies it to the macOS clipboard on release, and immediately returns to live output. Double click copies one word. Keyboard selection uses `v`, arrow keys, and `y` to copy. While scrollback or keyboard copy mode is active, the status bar shows **Jump to bottom**. Click it, or press `q` or `Escape`, to return to live output.
 
 The monitor shortcut opens and focuses the panel, or closes it when the monitor already has focus. Use the arrow keys to move through cards, `Enter` to open the selected session, and `Escape` to return to the previous terminal without closing the monitor.
 

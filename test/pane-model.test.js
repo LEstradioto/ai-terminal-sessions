@@ -51,6 +51,52 @@ test('tracks ready acknowledgement independently for each agent pane', () => {
   assert.equal(repeated.readyAt, 100);
 });
 
+test('keeps one prompt timer through running and strong completion observations', () => {
+  const startedAt = 1_000;
+  const running = mergeObservedAgent({
+    type: 'codex',
+    sessionId: 'one',
+    status: 'done',
+    turnStartedAt: 100,
+    turnCompletedAt: 200,
+    turnDurationMs: 100,
+    readyAt: 300,
+  }, {
+    type: 'codex',
+    sessionId: 'one',
+    status: 'running',
+    lastActivityAt: startedAt,
+    turnStartedAt: startedAt,
+  }, 2_000);
+  assert.equal(running.turnStartedAt, startedAt);
+  assert.equal(running.turnCompletedAt, 0);
+  assert.equal(running.turnDurationMs, 0);
+
+  const done = mergeObservedAgent(running, {
+    type: 'codex',
+    sessionId: 'one',
+    status: 'done',
+    lastActivityAt: 3_000,
+    turnStartedAt: startedAt,
+    turnCompletedAt: 4_000,
+    turnDurationMs: 3_000,
+  }, 4_100);
+  assert.equal(done.turnDurationMs, 3_000);
+  assert.equal(done.newlyReady, true);
+
+  const repeated = mergeObservedAgent(done, {
+    type: 'codex',
+    sessionId: 'one',
+    status: 'done',
+    lastActivityAt: 3_000,
+    turnStartedAt: startedAt,
+    turnCompletedAt: 4_000,
+    turnDurationMs: 3_000,
+  }, 5_000);
+  assert.equal(repeated.newlyReady, false);
+  assert.equal(repeated.readyAt, 4_100);
+});
+
 test('an acknowledged interrupted event stays idle until transcript activity changes', () => {
   const previous = {
     type: 'claude',

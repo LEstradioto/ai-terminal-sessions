@@ -12,6 +12,8 @@ Close any existing AI Terminal Sessions demo window, then run:
 
 Each launch resets only `demo/.work`, rebuilds the synthetic fixture, and opens a separate VS Code instance. Your normal settings, extensions, terminals, Codex data, and tmux server are not used.
 
+Set `AI_TERMINAL_SESSIONS_DEMO_WORK=/tmp/ai-terminal-sessions-demo-<name>` to use a disposable capture workspace without touching existing production files under `demo/.work`.
+
 Wait for four tabs and the Session Monitor to appear. The expected tabs are `video ads`, `favicon gen`, `auth solving`, and `ci watch`.
 
 ## Record the README demo

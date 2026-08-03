@@ -171,6 +171,39 @@ function activityLabel(activityAt, now = Date.now()) {
   return `${Math.floor(ageMs / 86400000)}D`;
 }
 
+function turnDurationLabel(record, now = Date.now()) {
+  const duration = turnElapsedMs(record, now);
+  if (duration === undefined) return '';
+  if (duration < 1000) return 'TURN <1S';
+  const totalSeconds = Math.floor(duration / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours) return `TURN ${hours}H ${String(minutes).padStart(2, '0')}M`;
+  if (minutes) return `TURN ${minutes}M ${String(seconds).padStart(2, '0')}S`;
+  return `TURN ${seconds}S`;
+}
+
+function turnElapsedMs(record, now = Date.now()) {
+  const startedAt = positiveNumber(record && record.turnStartedAt);
+  const completedAt = positiveNumber(record && record.turnCompletedAt);
+  const storedDuration = positiveNumber(record && record.turnDurationMs);
+  if (completedAt) {
+    if (storedDuration) return storedDuration;
+    if (startedAt && completedAt >= startedAt) return completedAt - startedAt;
+    return undefined;
+  }
+  if (startedAt && (record.status === 'running' || record.status === 'waiting')) {
+    return Math.max(0, Number(now) - startedAt);
+  }
+  return storedDuration || undefined;
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
 function previewChangedAt(previous, preview, fallbackActivityAt, now = Date.now()) {
   if (!previous) return Number(fallbackActivityAt) || 0;
   return previous.preview !== preview ? now : Number(previous.changedAt) || 0;
@@ -210,4 +243,6 @@ module.exports = {
   statusLabel,
   statusTone,
   terminalPreview,
+  turnDurationLabel,
+  turnElapsedMs,
 };

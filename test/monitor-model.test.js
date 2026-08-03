@@ -10,6 +10,7 @@ const {
   statusLabel,
   statusTone,
   terminalPreview,
+  turnDurationLabel,
 } = require('../monitor-model');
 const { monitorHtml } = require('../monitor-view');
 
@@ -50,6 +51,18 @@ test('formats activity age for a compact instrument label', () => {
   assert.equal(activityLabel(now - 5 * 60_000, now), '5M');
   assert.equal(activityLabel(now - 3 * 3_600_000, now), '3H');
   assert.equal(activityLabel(0, now), '-');
+});
+
+test('formats live and completed prompt duration independently from activity age', () => {
+  const now = 1_000_000;
+  assert.equal(turnDurationLabel({ status: 'running', turnStartedAt: now - 65_000 }, now), 'TURN 1M 05S');
+  assert.equal(turnDurationLabel({
+    status: 'done',
+    turnStartedAt: now - 80_000,
+    turnCompletedAt: now - 20_000,
+    turnDurationMs: 60_000,
+  }, now), 'TURN 1M 00S');
+  assert.equal(turnDurationLabel({}, now), '');
 });
 
 test('opening the monitor does not make an old unchanged session look recent', () => {
@@ -118,4 +131,5 @@ test('webview HTML has a strict CSP and escapes workspace text', () => {
   assert.match(html, /inside a managed terminal/);
   assert.match(html, /Terminal output for/);
   assert.match(html, /function xtermColor/);
+  assert.match(html, /session\.turn/);
 });

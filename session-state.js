@@ -28,6 +28,9 @@ function normalizeAgent(agent) {
     title: shortString(agent.title, 500),
     lastActivityAt: finiteNumber(agent.lastActivityAt),
     lastSeenAt: finiteNumber(agent.lastSeenAt),
+    turnStartedAt: finiteNumber(agent.turnStartedAt),
+    turnCompletedAt: finiteNumber(agent.turnCompletedAt),
+    turnDurationMs: finiteNumber(agent.turnDurationMs),
     readyAt: finiteNumber(agent.readyAt),
     lastAcknowledgedReadyAt: finiteNumber(agent.lastAcknowledgedReadyAt),
     manuallyNeedsAttention: Boolean(agent.manuallyNeedsAttention),
@@ -95,6 +98,9 @@ function normalizeSessionRecord(raw, workspaceKey) {
     interruptedAt: finiteNumber(raw.interruptedAt),
     lastAcknowledgedInterruptedAt: finiteNumber(raw.lastAcknowledgedInterruptedAt),
     lastAgentActivityAt: finiteNumber(raw.lastAgentActivityAt),
+    turnStartedAt: finiteNumber(raw.turnStartedAt),
+    turnCompletedAt: finiteNumber(raw.turnCompletedAt),
+    turnDurationMs: finiteNumber(raw.turnDurationMs),
     lastTerminalActivityAt: finiteNumber(raw.lastTerminalActivityAt),
     lastTerminalActivitySource: VALID_TERMINAL_ACTIVITY_SOURCE.has(raw.lastTerminalActivitySource)
       ? raw.lastTerminalActivitySource

@@ -33,6 +33,7 @@ const {
   previewChangedAt,
   statusLabel,
   statusTone,
+  turnDurationLabel,
 } = require('./monitor-model');
 const { monitorHtml } = require('./monitor-view');
 const { historyPreviewHtml } = require('./history-preview');
@@ -55,7 +56,11 @@ const {
   recordIdsForTabLabels,
   sortRecordsForRestore,
 } = require('./session-order');
-const { latestTranscriptActivity } = require('./transcript-activity');
+const {
+  claudeTurnTiming,
+  codexTurnTiming,
+  latestTranscriptActivity,
+} = require('./transcript-activity');
 const {
   hasAgentContext,
   hasMeaningfulTerminalOutput,
@@ -1064,9 +1069,15 @@ class SessionManager {
             recentMinutes: IDLE_RECENT_MINUTES,
             oldHours: IDLE_OLD_HOURS,
           });
+        const turn = turnDurationLabel(record, now);
         items.push({
           label: `${marker} ${recordTitle(record)}`,
-          description: `${statusLabel(record.status, acknowledged, record.manuallyNeedsAttention)} · ${activeProcess(record)} · ${activityLabel(activityReference(record, record.createdAt || now), now)}`,
+          description: [
+            statusLabel(record.status, acknowledged, record.manuallyNeedsAttention),
+            activeProcess(record),
+            turn,
+            activityLabel(activityReference(record, record.createdAt || now), now),
+          ].filter(Boolean).join(' · '),
           detail: record.cwd,
           record,
         });
@@ -1343,13 +1354,17 @@ class SessionManager {
         const activityAt = hasAgentContext(record)
           ? baselineActivityAt
           : Math.max(baselineActivityAt, Number(changedAt) || 0);
+        const turn = turnDurationLabel(record, now);
         return {
           id: record.id,
           title: record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession),
           process: activeProcess(record),
           status: statusLabel(record.status, acknowledged, record.manuallyNeedsAttention),
           tone: statusTone(record.status, acknowledged, record.manuallyNeedsAttention),
-          age: activityLabel(activityAt, now),
+          age: turn && (record.status === 'running' || record.status === 'waiting')
+            ? ''
+            : activityLabel(activityAt, now),
+          turn,
           preview,
           lines: terminal.lines,
           fresh: Boolean(previous && previous.preview !== preview),
@@ -3086,10 +3101,11 @@ class SessionManager {
       'set-option', '-t', record.tmuxSession, 'prefix2', 'None', ';',
       'set-option', '-t', record.tmuxSession, 'mouse', 'on', ';',
       'set-option', '-s', 'copy-command', '/usr/bin/pbcopy', ';',
-      // Keep wheel scrolling inside tmux even when Codex uses the alternate
-      // screen. A normal drag selects and copies, then exits copy mode on
-      // release so a tiny movement cannot leave the terminal paused.
-      'bind-key', '-T', 'root', 'WheelUpPane', 'copy-mode', '-e', '-t', '=', ';',
+      // Codex and shells use tmux scrollback. Claude owns its alternate-screen
+      // scroll UI, so panes marked "application" receive the mouse event.
+      'bind-key', '-T', 'root', 'WheelUpPane',
+      'if-shell', '-F', '#{==:#{@ai-pane-wheel-mode},application}',
+      'send-keys -M', 'copy-mode -e -t =', ';',
       'bind-key', '-T', 'root', 'MouseDrag1Pane', 'copy-mode', '-M', '-t', '=', ';',
       'bind-key', '-T', 'root', 'DoubleClick1Pane',
       'select-pane', '-t', '=', '\\;',
@@ -3123,7 +3139,12 @@ class SessionManager {
       if (args.length) args.push(';');
       args.push(
         'set-option', '-p', '-t', pane.id, '@ai-pane-id', pane.logicalId || crypto.randomUUID(), ';',
-        'set-option', '-p', '-t', pane.id, '@ai-pane-role', pane.role || 'shell',
+        'set-option', '-p', '-t', pane.id, '@ai-pane-role', pane.role || 'shell', ';',
+        'set-option', '-p', '-t', pane.id, '@ai-pane-agent', pane.agent && pane.agent.type || 'shell', ';',
+        'set-option', '-p', '-t', pane.id, '@ai-pane-wheel-mode',
+        pane.agent && pane.agent.active !== false && pane.agent.type === 'claude'
+          ? 'application'
+          : 'history',
       );
     }
     if (args.length) args.push(';');
@@ -3285,6 +3306,12 @@ class SessionManager {
           ...previousAgent,
           lastActivityAt: Number(previousAgent.lastActivityAt)
             || Number(record.lastAgentActivityAt) || 0,
+          turnStartedAt: Number(previousAgent.turnStartedAt)
+            || Number(record.turnStartedAt) || 0,
+          turnCompletedAt: Number(previousAgent.turnCompletedAt)
+            || Number(record.turnCompletedAt) || 0,
+          turnDurationMs: Number(previousAgent.turnDurationMs)
+            || Number(record.turnDurationMs) || 0,
           readyAt: Number(previousAgent.readyAt) || Number(record.readyAt) || 0,
           lastAcknowledgedReadyAt: Number(previousAgent.lastAcknowledgedReadyAt)
             || Number(record.lastAcknowledgedReadyAt) || 0,
@@ -3348,7 +3375,7 @@ class SessionManager {
       )),
     });
     const oldFingerprint = record.fingerprint;
-    const oldPaneCount = sessionPanes(record).length;
+    const oldPanePresentation = panePresentationFingerprint(record);
 
     record.windows = windows;
     record.activePaneId = focused && focused.logicalId;
@@ -3357,6 +3384,9 @@ class SessionManager {
     record.lastTerminalActivityAt = focused ? Number(focused.lastTerminalActivityAt) || 0 : 0;
     record.lastTerminalActivitySource = focused && focused.lastTerminalActivitySource;
     record.status = selected ? selected.status : 'idle';
+    record.turnStartedAt = selected ? Number(selected.turnStartedAt) || 0 : 0;
+    record.turnCompletedAt = selected ? Number(selected.turnCompletedAt) || 0 : 0;
+    record.turnDurationMs = selected ? Number(selected.turnDurationMs) || 0 : 0;
     record.readyAt = selected ? Number(selected.readyAt) || 0 : 0;
     record.lastAcknowledgedReadyAt = selected
       ? Number(selected.lastAcknowledgedReadyAt) || 0 : 0;
@@ -3378,7 +3408,7 @@ class SessionManager {
     record.fingerprint = fingerprintRecord(record);
     this.refreshPtyName(record);
     if (this.activeRecord()?.id === record.id) this.updateManagedTerminalContext(record);
-    if (oldPaneCount !== sessionPanes(record).length) {
+    if (oldPanePresentation !== panePresentationFingerprint(record)) {
       this.configurePanePresentation(record).catch((error) => this.log('pane-presentation', error));
     }
 
@@ -3437,6 +3467,7 @@ class SessionManager {
       active: true,
       lastSeenAt: now,
       lastActivityAt: journal.lastActivityAt,
+      ...turnTimingFields(journal),
     };
   }
 
@@ -3479,6 +3510,7 @@ class SessionManager {
       active: true,
       lastSeenAt: now,
       lastActivityAt: journal.lastActivityAt,
+      ...turnTimingFields(journal),
     };
   }
 
@@ -3946,6 +3978,14 @@ function parseTmuxPanes(raw) {
   }).filter((pane) => pane.session && pane.id);
 }
 
+function panePresentationFingerprint(record) {
+  return sessionPanes(record).map((pane) => [
+    pane.logicalId || pane.id,
+    pane.role || 'shell',
+    pane.agent && pane.agent.active !== false ? pane.agent.type : 'shell',
+  ].join(':')).join('|');
+}
+
 function paneInCopyMode(pane) {
   if (!pane || !pane.inMode) return false;
   return !pane.mode || /^(?:copy|view)-mode/.test(pane.mode);
@@ -4006,9 +4046,11 @@ async function inspectClaudeTranscript(file, metadataStatus) {
   const snapshot = await readJsonlTail(file);
   const transcriptActivityAt = latestTranscriptActivity(snapshot.entries, 'claude') || snapshot.modifiedAt;
   const transcriptAgeMs = transcriptActivityAt ? Math.max(0, Date.now() - transcriptActivityAt) : 0;
-  let status = metadataStatus === 'idle' ? 'done' : metadataStatus ? 'running' : 'idle';
+  const timing = claudeTurnTiming(snapshot.entries);
+  let status = timing.status || (metadataStatus ? 'running' : 'idle');
   let title;
   let lastToolUse = false;
+  let lastAssistantEndedTurn = false;
   for (const entry of snapshot.entries) {
     if (entry.type === 'custom-title' && entry.customTitle) title = entry.customTitle;
     const message = entry.message;
@@ -4024,25 +4066,25 @@ async function inspectClaudeTranscript(file, metadataStatus) {
     }
     if (message.role === 'assistant') {
       lastToolUse = items.some((item) => item.type === 'tool_use');
-      if (lastToolUse || items.some((item) => item.type === 'thinking') || !message.stop_reason) status = 'running';
-      else if (message.stop_reason === 'end_turn') status = 'done';
+      lastAssistantEndedTurn = message.stop_reason === 'end_turn'
+        && items.some((item) => item.type === 'text');
     } else if (message.role === 'user') {
       lastToolUse = false;
-      const text = typeof message.content === 'string' ? message.content : items.find((item) => item.type === 'text')?.text;
-      if (text && text.startsWith('[Request interrupted')) status = 'interrupted';
-      else if (items.some((item) => item.type === 'tool_result') || isUsefulPrompt(text)) status = 'running';
+      lastAssistantEndedTurn = false;
     }
   }
-  if (metadataStatus === 'idle') status = 'done';
+  if (!timing.status && metadataStatus === 'idle' && lastAssistantEndedTurn) status = 'done';
   if (metadataStatus && metadataStatus !== 'idle' && lastToolUse && transcriptAgeMs >= 3000) status = 'waiting';
-  return { status, title, lastActivityAt: transcriptActivityAt || undefined };
+  return { status, title, lastActivityAt: transcriptActivityAt || undefined, ...timing };
 }
 
 async function inspectCodexTranscript(file) {
   const snapshot = await readJsonlTail(file);
   const transcriptActivityAt = latestTranscriptActivity(snapshot.entries, 'codex') || snapshot.modifiedAt;
   const transcriptAgeMs = transcriptActivityAt ? Math.max(0, Date.now() - transcriptActivityAt) : 0;
-  let status = 'running';
+  const timing = codexTurnTiming(snapshot.entries);
+  const usesTaskBoundaries = snapshot.entries.some((entry) => entry && entry.type === 'event_msg');
+  let legacyStatus = 'running';
   let title;
   let lastToolCall = false;
   for (const entry of snapshot.entries) {
@@ -4076,12 +4118,25 @@ async function inspectCodexTranscript(file) {
       toolCall = entry.type === 'function_call';
     }
     if (nextStatus) {
-      status = nextStatus;
+      legacyStatus = nextStatus;
       lastToolCall = toolCall;
     }
   }
+  let status = timing.status || (usesTaskBoundaries && legacyStatus === 'done'
+    ? 'running'
+    : legacyStatus);
   if (status === 'running' && lastToolCall && transcriptAgeMs >= 3000) status = 'waiting';
-  return { status, title, lastActivityAt: transcriptActivityAt || undefined };
+  return { status, title, lastActivityAt: transcriptActivityAt || undefined, ...timing };
+}
+
+function turnTimingFields(journal) {
+  if (!journal) return {};
+  const result = {};
+  for (const field of ['turnStartedAt', 'turnCompletedAt', 'turnDurationMs']) {
+    const value = Number(journal[field]);
+    if (Number.isFinite(value) && value > 0) result[field] = value;
+  }
+  return result;
 }
 
 async function readJsonlTail(file, maxBytes = 512 * 1024) {
@@ -4203,6 +4258,9 @@ function fingerprintRecord(record) {
         transcript: pane.agent.transcript,
         active: pane.agent.active,
         lastActivityAt: pane.agent.lastActivityAt,
+        turnStartedAt: pane.agent.turnStartedAt,
+        turnCompletedAt: pane.agent.turnCompletedAt,
+        turnDurationMs: pane.agent.turnDurationMs,
         readyAt: pane.agent.readyAt,
         lastAcknowledgedReadyAt: pane.agent.lastAcknowledgedReadyAt,
         manuallyNeedsAttention: pane.agent.manuallyNeedsAttention,
@@ -4219,6 +4277,9 @@ function fingerprintRecord(record) {
     iconPreset: record.iconPreset,
     activeAgent: record.activeAgent,
     lastAgentActivityAt: record.lastAgentActivityAt,
+    turnStartedAt: record.turnStartedAt,
+    turnCompletedAt: record.turnCompletedAt,
+    turnDurationMs: record.turnDurationMs,
     lastTerminalActivityAt: record.lastTerminalActivityAt,
     lastTerminalActivitySource: record.lastTerminalActivitySource,
     readyAt: record.readyAt,

@@ -170,13 +170,19 @@ test('manual restore recovers live tmux sessions from the latest saved snapshot'
   assert.match(restore, /if \(force && !this\.records\.size\) await this\.recoverLatestLiveHistorySnapshot\(\)/);
 });
 
-test('private tmux sessions handle mouse wheel scrolling', () => {
+test('private tmux sessions route wheel scrolling by pane harness', () => {
   const start = source.indexOf('  async configureTmuxSession(');
   const end = source.indexOf('\n  async configurePanePresentation(', start);
   const configure = source.slice(start, end);
   assert.match(configure, /'mouse', 'on'/);
-  assert.match(configure, /'WheelUpPane', 'copy-mode', '-e', '-t', '='/);
+  assert.match(configure, /'WheelUpPane',[\s\S]*?@ai-pane-wheel-mode[\s\S]*?'send-keys -M', 'copy-mode -e -t ='/);
   assert.doesNotMatch(configure, /'mouse', 'off'/);
+
+  const presentationStart = source.indexOf('  async configurePanePresentation(');
+  const presentationEnd = source.indexOf('\n  async resizeSession(', presentationStart);
+  const presentation = source.slice(presentationStart, presentationEnd);
+  assert.match(presentation, /'@ai-pane-agent'/);
+  assert.match(presentation, /pane\.agent && pane\.agent\.active !== false && pane\.agent\.type === 'claude'/);
 });
 
 test('tmux click and drag copies text and immediately returns to live output', () => {

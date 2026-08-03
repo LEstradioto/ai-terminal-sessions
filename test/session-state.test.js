@@ -32,6 +32,9 @@ function record(title = 'First') {
     interruptedAt: 100,
     lastAcknowledgedInterruptedAt: 90,
     manuallyNeedsAttention: true,
+    turnStartedAt: 1000,
+    turnCompletedAt: 1500,
+    turnDurationMs: 500,
     windows: [{ panes: [{
       cwd: '/tmp/demo',
       lastTerminalActivityAt: 120,
@@ -41,6 +44,9 @@ function record(title = 'First') {
         type: 'codex',
         sessionId: '9c0ffbf3-5cfd-40fd-a860-2b54ad18d035',
         active: true,
+        turnStartedAt: 1000,
+        turnCompletedAt: 1500,
+        turnDurationMs: 500,
         pid: 123,
         transcript: '/Users/private/.codex/session.jsonl',
       },
@@ -57,12 +63,16 @@ test('state schema rejects incompatible payloads and removes volatile private fi
   assert.equal(pane.lastTerminalActivitySource, 'input');
   assert.equal(pane.agent.pid, undefined);
   assert.equal(pane.agent.transcript, undefined);
+  assert.equal(pane.agent.turnDurationMs, 500);
   assert.equal(payload.records[0].lastTerminalActivitySource, 'input');
   assert.equal(payload.records[0].iconPreset, 'debug');
   assert.equal(payload.records[0].iconMode, 'manual');
   assert.equal(payload.records[0].interruptedAt, 100);
   assert.equal(payload.records[0].lastAcknowledgedInterruptedAt, 90);
   assert.equal(payload.records[0].manuallyNeedsAttention, true);
+  assert.equal(payload.records[0].turnStartedAt, 1000);
+  assert.equal(payload.records[0].turnCompletedAt, 1500);
+  assert.equal(payload.records[0].turnDurationMs, 500);
 });
 
 test('state falls back safely when an icon preset is unknown', () => {

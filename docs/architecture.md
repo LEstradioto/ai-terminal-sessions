@@ -20,6 +20,10 @@ Every pane receives a stable logical ID stored in a tmux pane option. Agent iden
 
 Codex session identity normally comes from its local log database. If that database rotates while an old process remains alive, the extension checks only that process's open Codex transcript files and reads their session metadata. An unidentified agent process remains idle until reliable activity metadata is available.
 
+Turn status uses provider boundaries instead of terminal silence. Codex starts on `task_started` and becomes ready only after `task_complete`. Claude starts on a human prompt and becomes ready only after `turn_duration`. The start, completion, and elapsed duration are stored per pane, so a final-answer redraw cannot turn a tab green early and a long turn keeps its timer across extension reloads.
+
+Mouse wheel behavior is also pane-aware. Codex and shell panes enter tmux scrollback, while Claude panes receive the event in Claude Code's own alternate-screen UI. Explicit page-up and page-down commands always open tmux history.
+
 Tab icon choices use an allowlisted set of built-in VS Code icons and terminal ANSI theme colors. Automatic mode classifies Codex and Claude from the existing agent scan, and recognizes Rails servers from process arguments plus the standard Rails application marker. Manual choices stay locked until Automatic is selected again. The public terminal API only accepts appearance at creation time, so automatic detection saves the new appearance for the next safe terminal recreation or reload. It never reconnects a live tab just to change its icon. An explicit manual icon change may reconnect the disposable VS Code PTY client to the same live tmux session.
 
 Durable state writes are serialized through `SessionStateStore`. A per-workspace file lease prevents two extension hosts from writing or terminating the same sessions at once. Destructive close first confirms tmux termination and only then removes recovery state.

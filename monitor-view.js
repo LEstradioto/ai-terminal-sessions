@@ -458,9 +458,14 @@ function monitorHtml(webview, workspaceName) {
       const process = document.createElement('span');
       process.className = 'process';
       process.textContent = session.process;
+      const turn = document.createElement('span');
+      turn.className = 'turn';
+      turn.textContent = session.turn || '';
       const age = document.createElement('span');
       age.textContent = session.age;
-      meta.append(state, process, age);
+      meta.append(state, process);
+      if (session.turn) meta.append(turn);
+      if (session.age) meta.append(age);
       titleBlock.append(title, meta);
 
       const actions = document.createElement('div');

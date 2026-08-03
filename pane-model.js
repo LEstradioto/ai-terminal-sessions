@@ -33,10 +33,12 @@ function mergeObservedAgent(previous, observed, now = Date.now()) {
   if (!observed) return undefined;
   const related = sameAgent(previous, observed);
   const prior = related ? previous : {};
+  const turn = mergeTurnTiming(prior, observed);
   const previousActivity = Number(prior.lastActivityAt) || 0;
   const currentActivity = Number(observed.lastActivityAt) || 0;
+  const newCompletion = turn.turnCompletedAt > (Number(prior.turnCompletedAt) || 0);
   const newlyReady = observed.status === 'done' && (
-    !Number(prior.readyAt) || currentActivity > previousActivity
+    newCompletion || !Number(prior.readyAt) || currentActivity > previousActivity
   );
   const newlyInterrupted = observed.status === 'interrupted' && (
     !Number(prior.interruptedAt) || currentActivity > previousActivity
@@ -49,6 +51,7 @@ function mergeObservedAgent(previous, observed, now = Date.now()) {
   return {
     ...prior,
     ...observed,
+    ...turn,
     readyAt: newlyReady ? now : Number(prior.readyAt) || 0,
     lastAcknowledgedReadyAt: Number(prior.lastAcknowledgedReadyAt) || 0,
     status: observed.status === 'interrupted' && interruptionAcknowledged
@@ -60,6 +63,54 @@ function mergeObservedAgent(previous, observed, now = Date.now()) {
     newlyReady,
     newlyInterrupted,
   };
+}
+
+function mergeTurnTiming(previous, observed) {
+  const priorStart = positiveNumber(previous && previous.turnStartedAt);
+  const priorCompleted = positiveNumber(previous && previous.turnCompletedAt);
+  const observedStart = positiveNumber(observed && observed.turnStartedAt);
+  const observedCompleted = positiveNumber(observed && observed.turnCompletedAt);
+  const observedDuration = positiveNumber(observed && observed.turnDurationMs);
+  let turnStartedAt = priorStart;
+  let turnCompletedAt = priorCompleted;
+  let turnDurationMs = positiveNumber(previous && previous.turnDurationMs);
+
+  if (observedStart > priorStart) {
+    turnStartedAt = observedStart;
+    turnCompletedAt = observedCompleted >= observedStart ? observedCompleted : 0;
+    turnDurationMs = turnCompletedAt
+      ? observedDuration || turnCompletedAt - turnStartedAt
+      : 0;
+  } else if (observedStart && observedStart === priorStart) {
+    turnCompletedAt = observedCompleted >= observedStart ? observedCompleted : 0;
+    turnDurationMs = turnCompletedAt
+      ? observedDuration || turnCompletedAt - turnStartedAt
+      : 0;
+  } else if (observedCompleted > priorCompleted) {
+    turnCompletedAt = observedCompleted;
+    turnDurationMs = observedDuration || (
+      turnStartedAt && observedCompleted >= turnStartedAt
+        ? observedCompleted - turnStartedAt
+        : 0
+    );
+    if (!turnStartedAt && turnDurationMs) {
+      turnStartedAt = Math.max(0, observedCompleted - turnDurationMs);
+    }
+  } else if ((observed.status === 'running' || observed.status === 'waiting')
+    && priorCompleted && positiveNumber(observed.lastActivityAt) > priorCompleted) {
+    // The transcript tail can lose the beginning of a very long new turn.
+    // Prefer no timer to presenting the previous turn's duration as current.
+    turnStartedAt = 0;
+    turnCompletedAt = 0;
+    turnDurationMs = 0;
+  }
+
+  return { turnStartedAt, turnCompletedAt, turnDurationMs };
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function agentNeedsAttention(agent) {
@@ -100,6 +151,7 @@ module.exports = {
   agentNeedsAttention,
   focusedPane,
   mergeObservedAgent,
+  mergeTurnTiming,
   normalizePaneRole,
   normalizeRestorePolicy,
   paneKey,

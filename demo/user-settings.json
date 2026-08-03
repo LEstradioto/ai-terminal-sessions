@@ -3,6 +3,7 @@
   "telemetry.telemetryLevel": "off",
   "workbench.secondarySideBar.defaultVisibility": "hidden",
   "workbench.startupEditor": "none",
+  "git.openRepositoryInParentFolders": "never",
   "terminal.integrated.enablePersistentSessions": false,
   "window.restoreWindows": "none",
   "window.commandCenter": false,

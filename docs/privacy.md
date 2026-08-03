@@ -18,7 +18,7 @@ Transcript content is used locally for status detection and for the explicit **R
 
 ## Data stored locally
 
-VS Code workspace/global storage contains an allowlisted session record: tmux name, working directory, titles, icon preset, tab order, timestamps, agent type/session ID, and compact restore metadata. PIDs, transcript paths, raw commands, and pane start commands are not persisted.
+VS Code workspace/global storage contains an allowlisted session record: tmux name, working directory, titles, icon preset, tab order, activity and turn timing, agent type/session ID, and compact restore metadata. PIDs, transcript paths, raw commands, and pane start commands are not persisted.
 
 Composer recovery stores one non-empty draft per managed pane, up to 50,000 characters. Session History keeps up to 500 closed-session entries per workspace. Each entry may contain up to six recent user or assistant messages and one recovered draft, limited to 1,600 characters each. These previews are read from local Codex or Claude transcripts and stored locally so browsing history does not repeatedly scan large files or call a model.
 
