@@ -48,6 +48,10 @@ const {
 } = require('./session-presentation');
 const {
   SessionMonitor,
+  activeProcess,
+  activityLabel,
+  statusLabel,
+  turnDurationLabel,
 } = require('./monitor-model');
 const {
   appendSessionSnapshot,
@@ -3037,4 +3041,4 @@ async function commandStatus(file, args, options = {}) {
   }
 }
 
-module.exports = { activate, deactivate };
+module.exports = { SessionManager, activate, deactivate };
