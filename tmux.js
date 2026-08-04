@@ -226,7 +226,11 @@ class TmuxRuntime {
       'bind-key', '-T', 'root', 'WheelUpPane',
       'if-shell', '-F', '#{==:#{@ai-pane-wheel-mode},application}',
       'send-keys -M', 'copy-mode -e -t =', ';',
-      'bind-key', '-T', 'root', 'MouseDrag1Pane', 'copy-mode', '-M', '-t', '=', ';',
+      // Claude owns mouse selection while its alternate-screen UI is active.
+      // Forcing tmux copy mode there produces an empty 0/0 history view.
+      'bind-key', '-T', 'root', 'MouseDrag1Pane',
+      'if-shell', '-F', '#{==:#{@ai-pane-wheel-mode},application}',
+      'send-keys -M', 'copy-mode -M -t =', ';',
       'bind-key', '-T', 'root', 'DoubleClick1Pane',
       'select-pane', '-t', '=', '\\;',
       'copy-mode', '-H', '-t', '=', '\\;',

@@ -21,6 +21,8 @@ All notable changes to AI Terminal Sessions are documented here.
 - Tracked agent status, attention acknowledgement, roles, focus, and drafts independently per pane.
 - Restored saved pane layouts and resumed Codex or Claude agents independently after a cold boot.
 - Kept the tab marker tied to the focused pane while counting background pane work and attention in the status bar.
+- Kept the active prompt timer and last completed turn time visible in the status bar.
+- Routed Claude mouse selection to its own alternate-screen UI instead of an empty tmux copy view.
 - Added a safe prepare and import workflow for moving a workspace to another folder or disk.
 - Left right-click to VS Code instead of opening both the VS Code and tmux menus.
 

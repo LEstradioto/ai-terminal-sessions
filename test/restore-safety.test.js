@@ -162,12 +162,15 @@ test('private tmux sessions route wheel scrolling by pane harness', () => {
   assert.match(ensure, /if \(alive\) await this\.configurePanePresentation\(record\)/);
 });
 
-test('tmux click and drag copies text and immediately returns to live output', () => {
+test('tmux routes Claude drag selection to the application instead of empty copy mode', () => {
   const start = tmuxSource.indexOf('  async configureTmuxSession(');
   const end = tmuxSource.indexOf('\n  async configurePanePresentation(', start);
   const configure = tmuxSource.slice(start, end);
   assert.match(configure, /'copy-command', copyCommand/);
-  assert.match(configure, /'MouseDrag1Pane', 'copy-mode', '-M', '-t', '='/);
+  assert.match(
+    configure,
+    /'MouseDrag1Pane',[\s\S]*?@ai-pane-wheel-mode[\s\S]*?'send-keys -M', 'copy-mode -M -t ='/,
+  );
   assert.match(configure, /'DoubleClick1Pane',[\s\S]*?'select-word',[\s\S]*?'copy-pipe-and-cancel'/);
   assert.match(configure, /'MouseDragEnd1Pane',[\s\S]*?'copy-pipe-and-cancel'/);
   assert.doesNotMatch(configure, /M-MouseDrag1Pane|copy-pipe-no-clear/);

@@ -898,6 +898,8 @@ class SessionManager {
 
     const counts = sessionCounts(this.records.values());
     const health = this.currentSessionHealth();
+    const active = this.activeRecord();
+    const activeTurn = turnDurationLabel(active);
     item.backgroundColor = undefined;
 
     if (!health.healthy) {
@@ -912,6 +914,7 @@ class SessionManager {
     } else {
       item.text = `$(terminal) ${counts.total}`;
     }
+    if (activeTurn) item.text += ` · $(watch) ${activeTurn.slice('TURN '.length)}`;
 
     const healthLines = health.healthy
       ? ['Restore health: OK']
@@ -923,12 +926,18 @@ class SessionManager {
       `${counts.total} saved session(s)`,
       `${counts.attentionPanes} pane(s) need attention · ${counts.workingPanes} working`,
       `${health.connected} connected · ${health.visible} visible managed tab(s)`,
+      ...(activeTurn ? [
+        `${active && active.status === 'running' ? 'Active' : 'Last'} turn: ${activeTurn.slice('TURN '.length)}`,
+      ] : []),
       ...healthLines,
       'Click to switch sessions and inspect restore health.',
     ].join('\n');
     item.accessibilityInformation = {
       label: health.healthy
-        ? `${counts.total} AI terminal sessions, ${counts.attentionPanes} panes need attention`
+        ? [
+          `${counts.total} AI terminal sessions, ${counts.attentionPanes} panes need attention`,
+          activeTurn && `${active.status === 'running' ? 'active' : 'last'} turn ${activeTurn.slice('TURN '.length)}`,
+        ].filter(Boolean).join(', ')
         : `AI terminal restore warning, ${health.extra} extra tabs and ${health.missing} disconnected sessions`,
     };
     this.updateCopyModeStatusBar();
