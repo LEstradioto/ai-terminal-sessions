@@ -1,12 +1,14 @@
 'use strict';
 
+const { monitorHtml } = require('./monitor-view');
+const { activityReference, hasAgentContext } = require('./session-presentation');
+
+const MONITOR_CONTAINER_COMMAND = 'workbench.view.extension.aiTerminalSessionsPanel';
+const MONITOR_LINES = 12;
+const MONITOR_REFRESH_MS = 1000;
 const ANSI_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const SGR_RE = /\x1b\[([0-9;:]*)m/g;
 const DIVIDER_RUN_RE = /([─━═\-=])\1{15,}/gu;
-
-function terminalPreview(rawText, maxLines = 12) {
-  return ansiTerminalPreview(rawText, maxLines).text;
-}
 
 function ansiTerminalPreview(rawText, maxLines = 12) {
   const limit = Math.max(1, Math.min(40, Number(maxLines) || 12));
@@ -233,15 +235,265 @@ function activeProcess(record) {
   const activePane = panes.find((pane) => pane.active) || panes[0];
   return activePane && (activePane.agent?.process || activePane.process) || 'shell';
 }
+class SessionMonitor {
+  constructor(owner, options) {
+    this.owner = owner;
+    this.vscode = options.vscode;
+    this.workspaceName = options.workspaceName;
+    this.waitFor = options.waitFor;
+    this.titleFor = options.titleFor;
+    this.view = undefined;
+    this.timer = undefined;
+    this.refreshing = false;
+    this.previewCache = new Map();
+    this.openPromise = undefined;
+    this.focused = false;
+    this.returnTerminal = undefined;
+  }
+
+  async updateContext() {
+    await this.vscode.commands.executeCommand(
+      'setContext',
+      'aiTerminalSessions.monitorHasPins',
+      this.owner.pinnedRecords().length > 0,
+    );
+  }
+
+  async togglePin() {
+    const record = this.owner.activeRecord();
+    if (!record) return this.owner.warnManagedTerminal();
+    await this.setPinned(record, !record.monitorPinned);
+  }
+
+  async setPinned(record, pinned) {
+    if (!record || !this.owner.records.has(record.id)) return;
+    if (pinned && !record.monitorPinned && this.owner.pinnedRecords().length >= 4) {
+      this.vscode.window.showWarningMessage('The Session Monitor supports up to four sessions.');
+      return;
+    }
+    record.monitorPinned = Boolean(pinned);
+    record.monitorPinnedAt = pinned ? Date.now() : 0;
+    if (!pinned) this.previewCache.delete(record.id);
+    await Promise.all([this.owner.persist(), this.updateContext()]);
+    this.showPinConfirmation(record, pinned);
+    if (pinned) await this.open(true);
+    if (!pinned && !this.owner.pinnedRecords().length && this.view?.visible) return this.hide();
+    await this.refresh();
+  }
+
+  showPinConfirmation(record, pinned) {
+    const title = this.titleFor(record);
+    this.vscode.window.setStatusBarMessage(
+      pinned ? `$(pin) ${title} pinned to Session Monitor` : `$(pinned) ${title} removed from Session Monitor`,
+      1800,
+    );
+  }
+
+  async toggle() {
+    if (this.view?.visible && this.focused) return this.hide();
+    return this.focus();
+  }
+
+  async focus() {
+    const activeTerminal = this.vscode.window.activeTerminal;
+    const activeTab = this.vscode.window.tabGroups?.activeTabGroup?.activeTab;
+    this.returnTerminal = activeTab?.input instanceof this.vscode.TabInputTerminal
+      && activeTerminal && this.vscode.window.terminals.includes(activeTerminal)
+      ? activeTerminal
+      : undefined;
+    const view = this.view?.visible ? this.view : await this.open(false);
+    if (!view) return undefined;
+    if (typeof view.show === 'function') view.show(false);
+    await view.webview.postMessage({ type: 'focus-monitor' });
+    return view;
+  }
+
+  async hide() {
+    const view = this.view;
+    if (!view || !view.visible) return view;
+    const returnTerminal = this.returnTerminal;
+    await this.vscode.commands.executeCommand('workbench.action.closePanel');
+    this.focused = false;
+    this.stop();
+    if (!this.showTerminalIfLive(returnTerminal)) {
+      await this.vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+    }
+    this.owner.output.appendLine('[monitor] bottom panel hidden');
+    return view;
+  }
+
+  async open(preserveTerminalFocus = false) {
+    if (this.view?.visible) return this.view;
+    if (this.openPromise) return this.openPromise;
+    this.openPromise = this.openImpl(preserveTerminalFocus).finally(() => {
+      this.openPromise = undefined;
+    });
+    return this.openPromise;
+  }
+
+  async openImpl(preserveTerminalFocus) {
+    const returnTerminal = this.vscode.window.activeTerminal;
+    if (this.view && typeof this.view.show === 'function') {
+      this.view.show(Boolean(preserveTerminalFocus));
+    } else {
+      await this.vscode.commands.executeCommand(MONITOR_CONTAINER_COMMAND);
+      await this.waitFor(() => Boolean(this.view), 1200, 25);
+    }
+    if (!this.view) {
+      this.vscode.window.showErrorMessage('The Session Monitor panel could not be opened.');
+      return undefined;
+    }
+    this.start();
+    await this.refresh();
+    if (preserveTerminalFocus) this.showTerminalIfLive(returnTerminal);
+    this.owner.output.appendLine('[monitor] bottom panel shown');
+    return this.view;
+  }
+
+  async resolve(view) {
+    this.view = view;
+    view.webview.options = { enableScripts: true };
+    view.webview.html = monitorHtml(view.webview, this.workspaceName());
+    view.webview.onDidReceiveMessage((message) => this.receive(message));
+    view.onDidChangeVisibility(() => this.visibilityChanged(view));
+    view.onDidDispose(() => this.disposed(view));
+    if (view.visible) this.start();
+    if (this.owner.started) await this.refresh();
+  }
+
+  receive(message) {
+    if (!message || this.owner.deactivating) return;
+    if (message.type === 'ready') this.run('monitor-ready', () => this.refresh());
+    else if (message.type === 'focus') this.run('monitor-focus', () => this.focusRecord(message.id));
+    else if (message.type === 'unpin') {
+      const record = this.owner.records.get(message.id);
+      if (record) this.run('monitor-unpin', () => this.setPinned(record, false));
+    } else if (message.type === 'focus-state') this.focused = Boolean(message.focused);
+    else if (message.type === 'return') this.run('monitor-return', () => this.return());
+  }
+
+  visibilityChanged(view) {
+    if (view.visible) {
+      this.start();
+      this.run('monitor-visible', () => this.refresh());
+      return;
+    }
+    this.focused = false;
+    this.stop();
+  }
+
+  disposed(view) {
+    if (this.view !== view) return;
+    this.view = undefined;
+    this.focused = false;
+    this.stop();
+  }
+
+  run(scope, operation) {
+    operation().catch((error) => this.owner.log(scope, error));
+  }
+
+  showTerminalIfLive(terminal) {
+    if (!terminal || !this.vscode.window.terminals.includes(terminal)) return false;
+    try {
+      terminal.show(false);
+      return true;
+    } catch (error) {
+      this.owner.log('monitor-return-focus', error);
+      return false;
+    }
+  }
+
+  async return() {
+    this.focused = false;
+    if (this.showTerminalIfLive(this.returnTerminal)) return;
+    await this.vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+  }
+
+  start() {
+    if (this.timer || !this.view?.visible || this.owner.deactivating) return;
+    this.timer = setInterval(() => this.run('monitor-refresh', () => this.refresh()), MONITOR_REFRESH_MS);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  async refresh() {
+    const view = this.view;
+    if (!view?.visible || this.refreshing || this.owner.deactivating) return;
+    this.refreshing = true;
+    try {
+      const now = Date.now();
+      const sessions = await Promise.all(
+        this.owner.pinnedRecords().map((record) => this.sessionSnapshot(record, now)),
+      );
+      if (this.view === view) await this.postSnapshot(view, sessions, now);
+    } finally {
+      this.refreshing = false;
+    }
+  }
+
+  async sessionSnapshot(record, now) {
+    const raw = await this.owner.tmux.runTmux([
+      'capture-pane', '-p', '-e', '-J', '-t', `${record.tmuxSession}:`,
+    ], true);
+    const terminal = ansiTerminalPreview(raw, MONITOR_LINES);
+    const previous = this.previewCache.get(record.id);
+    const baselineActivityAt = activityReference(record, Number(record.createdAt) || now);
+    const changedAt = previewChangedAt(previous, terminal.text, baselineActivityAt, now);
+    this.previewCache.set(record.id, { preview: terminal.text, changedAt });
+    return monitorSnapshot(record, terminal, previous, baselineActivityAt, changedAt, now, this.titleFor);
+  }
+
+  postSnapshot(view, sessions, now) {
+    return view.webview.postMessage({
+      type: 'snapshot',
+      sessions,
+      updated: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+  }
+
+  async focusRecord(recordId) {
+    const record = this.owner.records.get(recordId);
+    if (!record) return;
+    const terminal = this.owner.terminals.get(record.id) || this.owner.openRecord(record, false);
+    this.focused = false;
+    terminal.show(false);
+  }
+}
+
+function monitorSnapshot(record, terminal, previous, baselineActivityAt, changedAt, now, titleFor) {
+  const acknowledged = Boolean(record.readyAt
+    && (record.lastAcknowledgedReadyAt || 0) >= record.readyAt);
+  const activityAt = hasAgentContext(record)
+    ? baselineActivityAt
+    : Math.max(baselineActivityAt, Number(changedAt) || 0);
+  const turn = turnDurationLabel(record, now);
+  return {
+    id: record.id,
+    title: titleFor(record),
+    process: activeProcess(record),
+    status: statusLabel(record.status, acknowledged),
+    tone: statusTone(record.status, acknowledged),
+    age: turn && (record.status === 'running' || record.status === 'waiting')
+      ? '' : activityLabel(activityAt, now),
+    turn,
+    preview: terminal.text,
+    lines: terminal.lines,
+    fresh: Boolean(previous && previous.preview !== terminal.text),
+  };
+}
 
 module.exports = {
   activeProcess,
   activityLabel,
   ansiTerminalPreview,
   previewChangedAt,
+  SessionMonitor,
   statusLabel,
   statusTone,
-  terminalPreview,
   turnDurationLabel,
   turnElapsedMs,
 };

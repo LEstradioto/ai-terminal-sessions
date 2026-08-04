@@ -5,138 +5,121 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const childProcess = require('child_process');
 const {
-  buildRenameSource,
+  generateRenameTitle,
   normalizeContextTitle,
-  readRecentUserMessages,
-  stripStatusPrefix,
+  preferredRecordAgent,
+  providerLabel,
+  renameContext,
+  renameProvider,
 } = require('./rename-context');
-const { extractConversationPreview } = require('./conversation-preview');
 const {
-  codexSessionCacheExpired,
-  codexSessionIdFromMetadata,
-  codexSessionIdFromTranscriptPath,
-  codexTranscriptPathsFromLsof,
-  newestCodexSessionCandidate,
-} = require('./codex-session');
-const { extractDraft } = require('./draft-recovery');
+  extractConversationPreview,
+  readJsonlTail,
+} = require('./transcripts');
 const {
+  DEFAULT_ICON_PRESET,
+  ICON_PRESETS,
+  WORKING_FRAMES,
   activityReference,
+  agentNeedsAttention,
+  automaticIconPreset,
+  focusedPane,
+  hasAgentContext,
+  hasMeaningfulTerminalOutput,
+  iconPreset,
   interruptionReference,
+  mergeObservedAgent,
+  normalizeIconMode,
+  normalizeIconPreset,
+  normalizePaneRole,
+  normalizeRestorePolicy,
+  paneKey,
+  recordTitle,
+  repairLegacyRestoreActivity,
+  sameAgent,
+  sessionCounts,
+  sessionNeedsAttention,
+  sessionPaneSummary,
+  sessionPanes,
+  sessionTabHealth,
   terminalStatusIcon,
-} = require('./session-status');
+  workingIndicator,
+} = require('./session-presentation');
 const {
-  activeProcess,
-  activityLabel,
-  ansiTerminalPreview,
-  previewChangedAt,
-  statusLabel,
-  statusTone,
-  turnDurationLabel,
+  SessionMonitor,
 } = require('./monitor-model');
-const { monitorHtml } = require('./monitor-view');
-const { historyPreviewHtml } = require('./history-preview');
 const {
   appendSessionSnapshot,
-  historyPayload,
-  normalizeSessionHistory,
-} = require('./session-history');
-const {
   archiveKey,
   archivePayload,
+  historyPayload,
+  historyPreviewHtml,
   migrateSnapshotsToArchive,
   normalizeArchivePayload,
   normalizePreview,
+  normalizeRelocationBundle,
+  normalizeSessionHistory,
+  relocateWorkspaceBundle,
+  relocationBundle,
   sessionAgent,
   upsertArchivedSession,
-} = require('./session-archive');
+} = require('./session-recovery');
 const {
-  applyVisualOrder,
-  recordIdsForTabLabels,
-  sortRecordsForRestore,
-} = require('./session-order');
+  ManagedTmuxPty,
+  extractDraft,
+  validateTerminalRuntime,
+} = require('./tmux-pty');
 const {
-  claudeTurnTiming,
-  codexTurnTiming,
-  latestTranscriptActivity,
-} = require('./transcript-activity');
-const {
-  hasAgentContext,
-  hasMeaningfulTerminalOutput,
-  repairLegacyRestoreActivity,
-} = require('./terminal-activity');
-const { WORKING_FRAMES, workingIndicator } = require('./working-animation');
-const { analyzeTerminalInput } = require('./terminal-input');
-const {
+  WorkbenchWindowAdapter,
+  WorkspaceLease,
+  configuredExecutable,
+  defaultWorkspaceCwd,
+  delay,
+  existingDirectory,
+  execFileCapture,
+  messageOf,
   redactDiagnostic,
   redactPath,
   resolveExecutable,
   shellQuote,
-  terminalProfileSetting,
-} = require('./runtime-paths');
-const { SessionStateStore, normalizeSessionRecord } = require('./session-state');
-const {
-  agentNeedsAttention,
-  focusedPane,
-  mergeObservedAgent,
-  normalizePaneRole,
-  normalizeRestorePolicy,
-  paneKey,
-  sameAgent,
-  sessionPaneSummary,
-  sessionPanes,
-} = require('./pane-model');
-const {
-  normalizeRelocationBundle,
-  relocateWorkspaceBundle,
-  relocationBundle,
-} = require('./workspace-relocation');
-const { WorkspaceLease } = require('./workspace-lease');
-const { WorkbenchWindowAdapter } = require('./workbench-window');
-const { matchesExecutable } = require('./process-detection');
-const { isMissingTmuxSessionError } = require('./tmux-errors');
-const {
-  DEFAULT_ICON_PRESET,
-  ICON_PRESETS,
-  automaticIconPreset,
-  iconPreset,
-  normalizeIconMode,
-  normalizeIconPreset,
-} = require('./terminal-icons');
-const {
-  isSerializedTerminalStubLabel,
   staleManagedTerminalTabs,
-} = require('./workbench-recovery');
+  stripStatusPrefix,
+  terminalProfileSetting,
+  isSerializedTerminalStubLabel,
+} = require('./runtime');
 const {
-  recordTitle,
-  sessionCounts,
-  sessionNeedsAttention,
-  sessionTabHealth,
-} = require('./session-counter');
+  SessionStateStore,
+  WorkspaceRecoveryFiles,
+  applyVisualOrder,
+  normalizeSessionRecord,
+  recordIdsForTabLabels,
+  sortRecordsForRestore,
+} = require('./session-state');
+const { AgentObserver, descendantsOf, readProcessTable } = require('./agents');
+const {
+  TmuxRuntime,
+  groupPanesBySession,
+  paneInCopyMode,
+  panePresentationFingerprint,
+  parseTmuxPanes,
+} = require('./tmux');
 
 const STATE_KEY = 'aiTerminalSessions.state.v1';
 const PROFILE_ID = 'aiTerminalSessions.profile';
 const LEGACY_MONITOR_VIEW_TYPE = 'aiTerminalSessions.monitor';
 const MONITOR_VIEW_ID = 'aiTerminalSessions.sessionMonitor';
-const MONITOR_CONTAINER_COMMAND = 'workbench.view.extension.aiTerminalSessionsPanel';
 const DRAFT_MAX_CAPTURE_MS = 5000;
 const DRAFT_AUTOSAVE_DELAY_MS = 1500;
-const MONITOR_LINES = 12;
-const MONITOR_REFRESH_MS = 1000;
 const POLL_MS = 2000;
 const SNAPSHOT_MS = 15000;
 const TITLE_REFRESH_MS = 30 * 60 * 1000;
 const IDLE_RECENT_MINUTES = 30;
 const IDLE_OLD_HOURS = 4;
-const DEFAULT_TMUX_SERVER = 'ai-terminal-sessions';
-const DEFAULT_TMUX_HISTORY_LIMIT = 20000;
-const CODEX_SESSION_REFRESH_MS = 5000;
 const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 let activeManager;
 let activeLease;
 let activeStartPromise;
-let nodePtyModule;
 
 async function activate(context) {
   const activationStartedAt = Date.now();
@@ -220,10 +203,8 @@ async function deactivate() {
 }
 
 async function validateRuntime(config) {
-  const tmux = configuredExecutable(config, 'tmux');
   try {
-    await execFileText(tmux, ['-V'], { timeout: 3000 });
-    loadNodePty();
+    await validateTerminalRuntime(config, vscode);
   } catch (error) {
     vscode.window.showErrorMessage(
       `AI Terminal Sessions could not start: ${compactDiagnostic(messageOf(error))}`,
@@ -234,6 +215,7 @@ async function validateRuntime(config) {
 
 class SessionManager {
   constructor(context, output, workspaceKey = getWorkspaceKey()) {
+    this.vscode = vscode;
     this.context = context;
     this.output = output;
     this.workspaceKey = workspaceKey;
@@ -251,11 +233,6 @@ class SessionManager {
     this.ptys = new Map();
     this.terminals = new Map();
     this.pendingCloseActions = new Map();
-    this.ensurePromises = new Map();
-    this.codexPidCache = new Map();
-    this.codexTranscriptCache = new Map();
-    this.codexThreadNames = new Map();
-    this.codexIndexMtime = 0;
     this.persistTimer = undefined;
     this.pollTimer = undefined;
     this.titlePollTimer = undefined;
@@ -266,31 +243,13 @@ class SessionManager {
     this.draftCaptureTimers = new Map();
     this.draftMaxCaptureTimers = new Map();
     this.drafts = new Map();
-    this.draftPersistQueue = Promise.resolve();
-    this.draftStorePath = path.join(
+    this.recoveryFiles = new WorkspaceRecoveryFiles(
       this.context.globalStorageUri.fsPath,
-      `drafts-${this.workspaceHash}.json`,
+      this.workspaceHash,
     );
     this.sessionHistory = [];
-    this.historyPersistQueue = Promise.resolve();
-    this.historyStorePath = path.join(
-      this.context.globalStorageUri.fsPath,
-      `history-${this.workspaceHash}.json`,
-    );
     this.sessionArchive = [];
-    this.archivePersistQueue = Promise.resolve();
-    this.archiveStorePath = path.join(
-      this.context.globalStorageUri.fsPath,
-      `archive-${this.workspaceHash}.json`,
-    );
     this.relocationStorePath = path.join(this.context.globalStorageUri.fsPath, 'relocations');
-    this.monitorView = undefined;
-    this.monitorTimer = undefined;
-    this.monitorRefreshing = false;
-    this.monitorPreviewCache = new Map();
-    this.monitorOpenPromise = undefined;
-    this.monitorFocused = false;
-    this.monitorReturnTerminal = undefined;
     this.legacyMonitorRecoveryPromise = undefined;
     this.workspaceStorageId = path.basename(
       (this.context.storageUri && this.context.storageUri.fsPath) || '',
@@ -305,26 +264,31 @@ class SessionManager {
     this.deactivating = false;
     this.lastSnapshotAt = 0;
     this.workbench = new WorkbenchWindowAdapter(vscode, (scope, error) => this.log(scope, error), delay);
+    this.tmux = new TmuxRuntime({
+      config: () => this.config(),
+      output: this.output,
+      extensionPath: this.context.extensionPath,
+      workspaceHash: this.workspaceHash,
+      defaultCwd: () => defaultWorkspaceCwd(vscode),
+      codexPath: () => this.codexPath(),
+      claudePath: () => this.claudePath(),
+      onRestored: () => this.schedulePersist(),
+    });
+    this.monitor = new SessionMonitor(this, {
+      vscode,
+      workspaceName: getWorkspaceName,
+      waitFor,
+      titleFor: (record) => record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession),
+    });
+    this.agentObserver = new AgentObserver({
+      log: (scope, error) => this.log(scope, error),
+    });
     this.demoMode = context.extensionMode === vscode.ExtensionMode.Development
       && process.env.AI_TERMINAL_SESSIONS_DEMO === '1';
   }
 
   config() {
     return vscode.workspace.getConfiguration('aiTerminalSessions');
-  }
-
-  tmuxPath() {
-    return configuredExecutable(this.config(), 'tmux');
-  }
-
-  tmuxServerName() {
-    const legacy = this.config().get('tmuxServerName');
-    return String(process.env.AI_TERMINAL_SESSIONS_TMUX_SERVER || legacy || DEFAULT_TMUX_SERVER)
-      .replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64) || DEFAULT_TMUX_SERVER;
-  }
-
-  tmuxArguments(args) {
-    return ['-L', this.tmuxServerName(), '-f', '/dev/null', ...args];
   }
 
   register() {
@@ -358,8 +322,8 @@ class SessionManager {
       'aiTerminalSessions.jumpToBottom',
       () => this.jumpActiveToBottom(),
     ));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitorPin', () => this.toggleMonitorPin()));
-    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitor', () => this.toggleMonitor()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitorPin', () => this.monitor.togglePin()));
+    subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.toggleMonitor', () => this.monitor.toggle()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.remove', () => this.removeActive()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.showSessionHistory', () => this.showSessionHistory()));
     subscriptions.push(vscode.commands.registerCommand('aiTerminalSessions.clearRecoveryData', () => this.clearRecoveryData()));
@@ -396,7 +360,7 @@ class SessionManager {
     subscriptions.push(copyModeStatusBar);
     this.updateSessionStatusBar();
     subscriptions.push(vscode.window.registerWebviewViewProvider(MONITOR_VIEW_ID, {
-      resolveWebviewView: async (view) => this.resolveMonitorView(view),
+      resolveWebviewView: async (view) => this.monitor.resolve(view),
     }, {
       webviewOptions: { retainContextWhenHidden: true },
     }));
@@ -476,12 +440,12 @@ class SessionManager {
     if (this.demoMode) await this.waitForDemoSessions();
     await this.scanAll();
     this.updateManagedTerminalContext(this.activeRecord());
-    await this.updateMonitorContext();
+    await this.monitor.updateContext();
     this.started = true;
     this.updateSessionStatusBar();
-    if (this.monitorView) await this.refreshMonitor();
-    if (this.demoMode && !this.monitorView && this.pinnedRecords().length) {
-      await this.openMonitor();
+    if (this.monitor.view) await this.monitor.refresh();
+    if (this.demoMode && !this.monitor.view && this.pinnedRecords().length) {
+      await this.monitor.open();
     }
 
     this.pollTimer = setInterval(() => {
@@ -599,7 +563,7 @@ class SessionManager {
     const deadline = Date.now() + 6000;
     while (Date.now() < deadline) {
       const alive = await Promise.all([...this.records.values()].map((record) => (
-        this.tmuxHasSession(record.tmuxSession).catch(() => false)
+        this.tmux.tmuxHasSession(record.tmuxSession).catch(() => false)
       )));
       if (alive.length && alive.every(Boolean)) return true;
       await delay(100);
@@ -609,30 +573,20 @@ class SessionManager {
   }
 
   async loadSessionHistory() {
-    let payload;
     try {
-      payload = JSON.parse(await fs.promises.readFile(this.historyStorePath, 'utf8'));
+      const payload = await this.recoveryFiles.read('history');
+      if (!payload) return;
+      this.sessionHistory = normalizeSessionHistory(payload, this.workspaceKey);
     } catch (error) {
-      if (error && error.code !== 'ENOENT') this.log('history-load', error);
+      this.log('history-load', error);
       return;
     }
-    this.sessionHistory = normalizeSessionHistory(payload, this.workspaceKey);
     this.output.appendLine(`[history] loaded ${this.sessionHistory.length} session snapshot(s)`);
   }
 
   persistSessionHistory() {
-    this.historyPersistQueue = this.historyPersistQueue.catch(() => {}).then(async () => {
-      const directory = path.dirname(this.historyStorePath);
-      const temporary = `${this.historyStorePath}.${process.pid}.tmp`;
-      await fs.promises.mkdir(directory, { recursive: true });
-      await fs.promises.writeFile(
-        temporary,
-        JSON.stringify(historyPayload(this.workspaceKey, this.sessionHistory)),
-        { encoding: 'utf8', mode: 0o600 },
-      );
-      await fs.promises.rename(temporary, this.historyStorePath);
-    });
-    return this.historyPersistQueue;
+    const payload = historyPayload(this.workspaceKey, this.sessionHistory);
+    return this.recoveryFiles.write('history', payload);
   }
 
   async checkpointSessionHistory(reason = 'state', force = false) {
@@ -645,30 +599,20 @@ class SessionManager {
   }
 
   async loadSessionArchive() {
-    let payload;
     try {
-      payload = JSON.parse(await fs.promises.readFile(this.archiveStorePath, 'utf8'));
+      const payload = await this.recoveryFiles.read('archive');
+      if (!payload) return;
+      this.sessionArchive = normalizeArchivePayload(payload, this.workspaceKey);
     } catch (error) {
-      if (error && error.code !== 'ENOENT') this.log('archive-load', error);
+      this.log('archive-load', error);
       return;
     }
-    this.sessionArchive = normalizeArchivePayload(payload, this.workspaceKey);
     this.output.appendLine(`[archive] loaded ${this.sessionArchive.length} session(s)`);
   }
 
   persistSessionArchive() {
-    this.archivePersistQueue = this.archivePersistQueue.catch(() => {}).then(async () => {
-      const directory = path.dirname(this.archiveStorePath);
-      const temporary = `${this.archiveStorePath}.${process.pid}.tmp`;
-      await fs.promises.mkdir(directory, { recursive: true });
-      await fs.promises.writeFile(
-        temporary,
-        JSON.stringify(archivePayload(this.workspaceKey, this.sessionArchive)),
-        { encoding: 'utf8', mode: 0o600 },
-      );
-      await fs.promises.rename(temporary, this.archiveStorePath);
-    });
-    return this.archivePersistQueue;
+    const payload = archivePayload(this.workspaceKey, this.sessionArchive);
+    return this.recoveryFiles.write('archive', payload);
   }
 
   async migrateSessionArchive() {
@@ -692,39 +636,34 @@ class SessionManager {
   }
 
   async loadDrafts() {
-    let payload;
     try {
-      payload = JSON.parse(await fs.promises.readFile(this.draftStorePath, 'utf8'));
+      const payload = await this.recoveryFiles.read('drafts');
+      if (!payload || payload.workspaceKey !== this.workspaceKey || !payload.drafts) return;
+      this.restoreDraftSnapshots(payload.drafts);
     } catch (error) {
-      if (error && error.code !== 'ENOENT') this.log('draft-load', error);
+      this.log('draft-load', error);
       return;
     }
-    if (!payload || payload.workspaceKey !== this.workspaceKey || !payload.drafts) return;
-    for (const [recordId, snapshot] of Object.entries(payload.drafts)) {
+    this.output.appendLine(`[draft] loaded ${this.drafts.size} recovery snapshot(s)`);
+  }
+
+  restoreDraftSnapshots(snapshots) {
+    for (const [recordId, snapshot] of Object.entries(snapshots)) {
       if (!snapshot || typeof snapshot.text !== 'string' || !snapshot.text.trim()) continue;
       this.drafts.set(recordId, {
         text: snapshot.text.slice(0, 50000),
         capturedAt: Number(snapshot.capturedAt) || 0,
       });
     }
-    this.output.appendLine(`[draft] loaded ${this.drafts.size} recovery snapshot(s)`);
   }
 
   persistDrafts() {
-    this.draftPersistQueue = this.draftPersistQueue.catch(() => {}).then(async () => {
-      const directory = path.dirname(this.draftStorePath);
-      const temporary = `${this.draftStorePath}.${process.pid}.tmp`;
-      const drafts = Object.fromEntries(this.drafts);
-      await fs.promises.mkdir(directory, { recursive: true });
-      await fs.promises.writeFile(temporary, JSON.stringify({
-        version: 1,
-        workspaceKey: this.workspaceKey,
-        savedAt: Date.now(),
-        drafts,
-      }), { encoding: 'utf8', mode: 0o600 });
-      await fs.promises.rename(temporary, this.draftStorePath);
+    return this.recoveryFiles.write('drafts', {
+      version: 1,
+      workspaceKey: this.workspaceKey,
+      savedAt: Date.now(),
+      drafts: Object.fromEntries(this.drafts),
     });
-    return this.draftPersistQueue;
   }
 
   async persist(reason = 'state') {
@@ -844,7 +783,7 @@ class SessionManager {
 
   async readComposer(record, pane = focusedPane(record)) {
     const target = pane && pane.id || `${record.tmuxSession}:`;
-    const raw = await this.runTmux([
+    const raw = await this.tmux.runTmux([
       'capture-pane', '-p', '-J', '-t', target, '-S', '-80',
     ], true);
     return extractDraft(raw);
@@ -894,8 +833,8 @@ class SessionManager {
     }
 
     const bufferName = `ai-terminal-draft-${record.id.slice(0, 8)}`;
-    await this.runTmuxInput(['load-buffer', '-b', bufferName, '-'], snapshot.text);
-    await this.runTmux([
+    await this.tmux.runTmuxInput(['load-buffer', '-b', bufferName, '-'], snapshot.text);
+    await this.tmux.runTmux([
       'paste-buffer', '-p', '-d', '-b', bufferName, '-t', pane && pane.id || `${record.tmuxSession}:`,
     ]);
     this.output.appendLine(`[draft] restored ${record.tmuxSession}: ${snapshot.text.length} character(s)`);
@@ -1125,7 +1064,7 @@ class SessionManager {
       matchOnDetail: true,
     });
     if (!picked) return;
-    if (picked.record) return this.focusMonitorRecord(picked.record.id);
+    if (picked.record) return this.monitor.focusRecord(picked.record.id);
     if (picked.action === 'history') return this.showSessionHistory();
     if (picked.action === 'new') return this.newTerminal();
     if (picked.action === 'health') return this.showSessionHealthWarning(health);
@@ -1149,241 +1088,6 @@ class SessionManager {
     if (choice === 'Show log') return this.output.show();
   }
 
-  async updateMonitorContext() {
-    await vscode.commands.executeCommand(
-      'setContext',
-      'aiTerminalSessions.monitorHasPins',
-      this.pinnedRecords().length > 0,
-    );
-  }
-
-  async toggleMonitorPin() {
-    const record = this.activeRecord();
-    if (!record) return this.warnManagedTerminal();
-    await this.setMonitorPinned(record, !record.monitorPinned);
-  }
-
-  async setMonitorPinned(record, pinned) {
-    if (!record || !this.records.has(record.id)) return;
-    if (pinned && !record.monitorPinned && this.pinnedRecords().length >= 4) {
-      vscode.window.showWarningMessage('The Session Monitor supports up to four sessions.');
-      return;
-    }
-
-    record.monitorPinned = Boolean(pinned);
-    record.monitorPinnedAt = pinned ? Date.now() : 0;
-    if (!pinned) this.monitorPreviewCache.delete(record.id);
-    await Promise.all([this.persist(), this.updateMonitorContext()]);
-
-    const title = record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession);
-    vscode.window.setStatusBarMessage(
-      pinned ? `$(pin) ${title} pinned to Session Monitor` : `$(pinned) ${title} removed from Session Monitor`,
-      1800,
-    );
-
-    if (pinned) await this.openMonitor(true);
-    if (!pinned && !this.pinnedRecords().length && this.monitorView?.visible) {
-      await this.hideMonitor();
-      return;
-    }
-    await this.refreshMonitor();
-  }
-
-  async toggleMonitor() {
-    if (this.monitorView?.visible && this.monitorFocused) return this.hideMonitor();
-    return this.focusMonitor();
-  }
-
-  async focusMonitor() {
-    const returnTerminal = vscode.window.activeTerminal;
-    const activeTab = vscode.window.tabGroups?.activeTabGroup?.activeTab;
-    this.monitorReturnTerminal = activeTab?.input instanceof vscode.TabInputTerminal
-      && returnTerminal && vscode.window.terminals.includes(returnTerminal)
-      ? returnTerminal
-      : undefined;
-    const view = this.monitorView?.visible
-      ? this.monitorView
-      : await this.openMonitor(false);
-    if (!view) return undefined;
-    if (typeof view.show === 'function') view.show(false);
-    await view.webview.postMessage({ type: 'focus-monitor' });
-    return view;
-  }
-
-  async hideMonitor() {
-    const view = this.monitorView;
-    if (!view || !view.visible) return view;
-    const returnTerminal = this.monitorReturnTerminal;
-    await vscode.commands.executeCommand('workbench.action.closePanel');
-    this.monitorFocused = false;
-    this.stopMonitorRefresh();
-    if (!this.showTerminalIfLive(returnTerminal)) {
-      await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-    }
-    this.output.appendLine('[monitor] bottom panel hidden');
-    return view;
-  }
-
-  async openMonitor(preserveTerminalFocus = false) {
-    if (this.monitorView?.visible) return this.monitorView;
-    if (this.monitorOpenPromise) return this.monitorOpenPromise;
-
-    this.monitorOpenPromise = this.openMonitorImpl(preserveTerminalFocus).finally(() => {
-      this.monitorOpenPromise = undefined;
-    });
-    return this.monitorOpenPromise;
-  }
-
-  async openMonitorImpl(preserveTerminalFocus) {
-    const returnTerminal = vscode.window.activeTerminal;
-    if (this.monitorView && typeof this.monitorView.show === 'function') {
-      this.monitorView.show(Boolean(preserveTerminalFocus));
-    } else {
-      await vscode.commands.executeCommand(MONITOR_CONTAINER_COMMAND);
-      await waitFor(() => Boolean(this.monitorView), 1200, 25);
-    }
-    const view = this.monitorView;
-    if (!view) {
-      vscode.window.showErrorMessage('The Session Monitor panel could not be opened.');
-      return undefined;
-    }
-    this.startMonitorRefresh();
-    await this.refreshMonitor();
-    if (preserveTerminalFocus) this.showTerminalIfLive(returnTerminal);
-    this.output.appendLine('[monitor] bottom panel shown');
-    return view;
-  }
-
-  async resolveMonitorView(view) {
-    this.monitorView = view;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = monitorHtml(view.webview, getWorkspaceName());
-
-    view.webview.onDidReceiveMessage((message) => {
-      if (!message || this.deactivating) return;
-      if (message.type === 'ready') {
-        this.refreshMonitor().catch((error) => this.log('monitor-ready', error));
-      } else if (message.type === 'focus') {
-        this.focusMonitorRecord(message.id).catch((error) => this.log('monitor-focus', error));
-      } else if (message.type === 'unpin') {
-        const record = this.records.get(message.id);
-        if (record) this.setMonitorPinned(record, false).catch((error) => this.log('monitor-unpin', error));
-      } else if (message.type === 'focus-state') {
-        this.monitorFocused = Boolean(message.focused);
-      } else if (message.type === 'return') {
-        this.returnFromMonitor().catch((error) => this.log('monitor-return', error));
-      }
-    });
-    view.onDidChangeVisibility(() => {
-      if (view.visible) {
-        this.startMonitorRefresh();
-        this.refreshMonitor().catch((error) => this.log('monitor-visible', error));
-      } else {
-        this.monitorFocused = false;
-        this.stopMonitorRefresh();
-      }
-    });
-    view.onDidDispose(() => {
-      if (this.monitorView !== view) return;
-      this.monitorView = undefined;
-      this.monitorFocused = false;
-      this.stopMonitorRefresh();
-    });
-    if (view.visible) this.startMonitorRefresh();
-    if (this.started) await this.refreshMonitor();
-  }
-
-  showTerminalIfLive(terminal) {
-    if (!terminal || !vscode.window.terminals.includes(terminal)) return false;
-    try {
-      terminal.show(false);
-      return true;
-    } catch (error) {
-      this.log('monitor-return-focus', error);
-      return false;
-    }
-  }
-
-  async returnFromMonitor() {
-    this.monitorFocused = false;
-    if (this.showTerminalIfLive(this.monitorReturnTerminal)) return;
-    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-  }
-
-  startMonitorRefresh() {
-    if (this.monitorTimer || !this.monitorView
-      || !this.monitorView.visible || this.deactivating) return;
-    this.monitorTimer = setInterval(() => {
-      this.refreshMonitor().catch((error) => this.log('monitor-refresh', error));
-    }, MONITOR_REFRESH_MS);
-  }
-
-  stopMonitorRefresh() {
-    if (this.monitorTimer) clearInterval(this.monitorTimer);
-    this.monitorTimer = undefined;
-  }
-
-  async refreshMonitor() {
-    const view = this.monitorView;
-    if (!view || !view.visible || this.monitorRefreshing || this.deactivating) return;
-    this.monitorRefreshing = true;
-    try {
-      const now = Date.now();
-      const maxLines = MONITOR_LINES;
-      const sessions = await Promise.all(this.pinnedRecords().map(async (record) => {
-        const raw = await this.runTmux([
-          'capture-pane', '-p', '-e', '-J', '-t', `${record.tmuxSession}:`,
-        ], true);
-        const terminal = ansiTerminalPreview(raw, maxLines);
-        const preview = terminal.text;
-        const previous = this.monitorPreviewCache.get(record.id);
-        const baselineActivityAt = activityReference(record, Number(record.createdAt) || now);
-        const changedAt = previewChangedAt(previous, preview, baselineActivityAt, now);
-        this.monitorPreviewCache.set(record.id, { preview, changedAt });
-
-        const acknowledged = Boolean(
-          record.readyAt && (record.lastAcknowledgedReadyAt || 0) >= record.readyAt
-        );
-        const activityAt = hasAgentContext(record)
-          ? baselineActivityAt
-          : Math.max(baselineActivityAt, Number(changedAt) || 0);
-        const turn = turnDurationLabel(record, now);
-        return {
-          id: record.id,
-          title: record.manualTitle || record.autoTitle || shortTitle(record.tmuxSession),
-          process: activeProcess(record),
-          status: statusLabel(record.status, acknowledged),
-          tone: statusTone(record.status, acknowledged),
-          age: turn && (record.status === 'running' || record.status === 'waiting')
-            ? ''
-            : activityLabel(activityAt, now),
-          turn,
-          preview,
-          lines: terminal.lines,
-          fresh: Boolean(previous && previous.preview !== preview),
-        };
-      }));
-
-      if (this.monitorView === view) {
-        await view.webview.postMessage({
-          type: 'snapshot',
-          sessions,
-          updated: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        });
-      }
-    } finally {
-      this.monitorRefreshing = false;
-    }
-  }
-
-  async focusMonitorRecord(recordId) {
-    const record = this.records.get(recordId);
-    if (!record) return;
-    const terminal = this.terminals.get(record.id) || this.openRecord(record, false);
-    this.monitorFocused = false;
-    terminal.show(false);
-  }
-
   createRecord(overrides = {}) {
     const id = crypto.randomUUID();
     const workspaceName = getWorkspaceName();
@@ -1398,7 +1102,7 @@ class SessionManager {
       id,
       workspaceKey: this.workspaceKey,
       tmuxSession: `vsc-${slug(workspaceName)}-${id.slice(0, 6)}`.slice(0, 60),
-      cwd: getDefaultCwd(),
+      cwd: defaultWorkspaceCwd(vscode),
       owned: true,
       autoTitle: shortTitle(`${workspaceName} ${sequence}`),
       manualTitle: '',
@@ -1523,7 +1227,7 @@ class SessionManager {
 
   async recoverLatestLiveHistorySnapshot() {
     if (this.records.size || !this.sessionHistory.length) return 0;
-    const liveRaw = await this.runTmux(['list-sessions', '-F', '#{session_name}'], true);
+    const liveRaw = await this.tmux.runTmux(['list-sessions', '-F', '#{session_name}'], true);
     const liveSessions = new Set(liveRaw.split('\n').map((line) => line.trim()).filter(Boolean));
     if (!liveSessions.size) return 0;
 
@@ -1541,7 +1245,7 @@ class SessionManager {
 
     await Promise.all([
       this.persist('live-history-recovery'),
-      this.updateMonitorContext(),
+      this.monitor.updateContext(),
     ]);
     this.output.appendLine(
       `[restore] recovered ${this.records.size} live session(s) from snapshot ${snapshot.id}`,
@@ -1580,7 +1284,7 @@ class SessionManager {
     // session here so inactive tabs are alive before their visual clients attach.
     for (const record of records) {
       try {
-        await this.ensureSession(record);
+        await this.tmux.ensureSession(record);
       } catch (error) {
         this.log('restore-session', error);
       }
@@ -1691,7 +1395,7 @@ class SessionManager {
     this.records.set(record.id, record);
     await this.persist('archive-restore');
     try {
-      await this.ensureSession(record);
+      await this.tmux.ensureSession(record);
       const terminal = this.openRecord(record, false);
       terminal.show(false);
       const pty = this.ptys.get(record.id);
@@ -1837,7 +1541,7 @@ class SessionManager {
       return;
     }
 
-    const liveRaw = await this.runTmux(['list-sessions', '-F', '#{session_name}'], true);
+    const liveRaw = await this.tmux.runTmux(['list-sessions', '-F', '#{session_name}'], true);
     const liveSessions = new Set(liveRaw.split('\n').map((line) => line.trim()).filter(Boolean));
     const currentIds = new Set(this.records.keys());
     const currentTmux = new Set([...this.records.values()].map((record) => record.tmuxSession));
@@ -1923,7 +1627,7 @@ class SessionManager {
       if (!record) continue;
       this.records.set(record.id, record);
     }
-    await Promise.all([this.persist('history-restore'), this.updateMonitorContext()]);
+    await Promise.all([this.persist('history-restore'), this.monitor.updateContext()]);
     await this.restoreTabs(true);
     await this.scanAll();
     vscode.window.showInformationMessage(`${picked.missing.length} tab(s) restored from history.`);
@@ -1943,9 +1647,7 @@ class SessionManager {
     this.sessionHistory = [];
     this.sessionArchive = [];
     await Promise.all([
-      fs.promises.unlink(this.draftStorePath).catch(ignoreMissingFile),
-      fs.promises.unlink(this.historyStorePath).catch(ignoreMissingFile),
-      fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
+      this.recoveryFiles.removeAll(),
       ...relocationFiles.map((file) => fs.promises.unlink(file).catch(ignoreMissingFile)),
     ]);
     vscode.window.showInformationMessage('Local drafts, closed sessions, snapshots, and prepared moves were deleted.');
@@ -2002,7 +1704,7 @@ class SessionManager {
     const failures = [];
     for (const record of records) {
       try {
-        await this.killTmuxSession(record.tmuxSession);
+        await this.tmux.killTmuxSession(record.tmuxSession);
       } catch (error) {
         failures.push(record.tmuxSession);
         this.log('relocation-stop', error);
@@ -2016,12 +1718,12 @@ class SessionManager {
     }
     for (const record of records) {
       this.cancelDraftCapture(record);
-      this.monitorPreviewCache.delete(record.id);
+      this.monitor.previewCache.delete(record.id);
     }
     this.records.clear();
     await Promise.all([
       this.persist('relocation-suspended'),
-      this.updateMonitorContext(),
+      this.monitor.updateContext(),
     ]);
     this.updateSessionStatusBar();
     vscode.window.showInformationMessage(
@@ -2146,26 +1848,22 @@ class SessionManager {
     const failures = [];
     for (const record of records) {
       try {
-        await this.killTmuxSession(record.tmuxSession);
+        await this.tmux.killTmuxSession(record.tmuxSession);
         this.records.delete(record.id);
         this.deleteDraftsForRecord(record);
-        this.monitorPreviewCache.delete(record.id);
+        this.monitor.previewCache.delete(record.id);
       } catch (error) {
         failures.push(record.tmuxSession);
         this.log('stop-all', error);
       }
     }
-    await Promise.all([this.persist('stop-all'), this.persistDrafts(), this.updateMonitorContext()]);
+    await Promise.all([this.persist('stop-all'), this.persistDrafts(), this.monitor.updateContext()]);
     if (!this.records.size) {
       this.sessionHistory = [];
       this.sessionArchive = [];
-      await Promise.all([
-        fs.promises.unlink(this.historyStorePath).catch(ignoreMissingFile),
-        fs.promises.unlink(this.draftStorePath).catch(ignoreMissingFile),
-        fs.promises.unlink(this.archiveStorePath).catch(ignoreMissingFile),
-      ]);
+      await this.recoveryFiles.removeAll();
     }
-    if (this.monitorView?.visible && !this.pinnedRecords().length) await this.hideMonitor();
+    if (this.monitor.view?.visible && !this.pinnedRecords().length) await this.monitor.hide();
     if (failures.length) {
       vscode.window.showErrorMessage(
         `${failures.length} session(s) could not be terminated. Their recovery state was kept; see the log.`,
@@ -2228,7 +1926,7 @@ class SessionManager {
     }
 
     if (reason === vscode.TerminalExitReason.Process) {
-      const sessionAlive = await this.tmuxHasSession(record.tmuxSession);
+      const sessionAlive = await this.tmux.tmuxHasSession(record.tmuxSession);
       if (exitStatus.code === 0 && !sessionAlive) {
         this.output.appendLine(`[close] clean shell exit; removing ${record.tmuxSession}`);
         await this.applyCloseAction(record, 'forget');
@@ -2285,17 +1983,17 @@ class SessionManager {
     if (!record) return this.warnManagedTerminal();
     const target = `${record.tmuxSession}:`;
     if (direction === 'up') {
-      await this.runTmux(['copy-mode', '-u', '-t', target]);
+      await this.tmux.runTmux(['copy-mode', '-u', '-t', target]);
       return;
     }
-    await this.runTmux(['send-keys', '-X', '-t', target, 'page-down-and-cancel'], true);
+    await this.tmux.runTmux(['send-keys', '-X', '-t', target, 'page-down-and-cancel'], true);
   }
 
   async jumpActiveToBottom() {
     const record = this.activeRecord();
     if (!record) return this.warnManagedTerminal();
     const target = `${record.tmuxSession}:`;
-    await this.runTmux([
+    await this.tmux.runTmux([
       'send-keys', '-X', '-t', target, 'history-bottom', ';',
       'send-keys', '-X', '-t', target, 'cancel',
     ], true);
@@ -2340,17 +2038,17 @@ class SessionManager {
     if (!picked || !picked.action) return;
     const target = pane && pane.id || `${record.tmuxSession}:`;
     if (picked.action === 'split-right' || picked.action === 'split-down') {
-      await this.runTmux([
+      await this.tmux.runTmux([
         'split-window', picked.action === 'split-right' ? '-h' : '-v',
         '-t', target,
-        '-c', existingDirectory(pane && pane.cwd || record.cwd),
+        '-c', existingDirectory(pane && pane.cwd || record.cwd, defaultWorkspaceCwd(vscode)),
       ]);
     } else if (picked.action === 'next') {
-      await this.runTmux(['select-pane', '-t', `${record.tmuxSession}:.+`], true);
+      await this.tmux.runTmux(['select-pane', '-t', `${record.tmuxSession}:.+`], true);
     } else if (picked.action === 'zoom') {
-      await this.runTmux(['resize-pane', '-Z', '-t', target]);
+      await this.tmux.runTmux(['resize-pane', '-Z', '-t', target]);
     } else if (picked.action === 'copy-mode') {
-      await this.runTmux(['copy-mode', '-u', '-t', target]);
+      await this.tmux.runTmux(['copy-mode', '-u', '-t', target]);
     } else if (picked.action === 'close') {
       const confirmation = await vscode.window.showWarningMessage(
         'Close the focused tmux pane and terminate its process?',
@@ -2358,7 +2056,7 @@ class SessionManager {
         'Close pane',
       );
       if (confirmation !== 'Close pane') return;
-      await this.runTmux(['kill-pane', '-t', target]);
+      await this.tmux.runTmux(['kill-pane', '-t', target]);
     } else if (picked.action === 'help') {
       await vscode.window.showInformationMessage(
         'Ctrl+B then: % split right · " split down · arrows move · o next · z zoom · x close · [ scrollback · ? all bindings',
@@ -2391,7 +2089,7 @@ class SessionManager {
     if (!picked) return;
     pane.role = picked.role;
     pane.restorePolicy = pane.agent ? 'resume-agent' : 'shell';
-    await this.configurePanePresentation(record);
+    await this.tmux.configurePanePresentation(record);
     this.schedulePersist();
   }
 
@@ -2481,7 +2179,7 @@ class SessionManager {
     await delay(100);
     if (!this.records.has(record.id)) return;
 
-    await this.ensureSession(record);
+    await this.tmux.ensureSession(record);
     const replacement = this.openRecord(record, true);
     replacement.show(false);
     const pty = this.ptys.get(record.id);
@@ -2495,7 +2193,11 @@ class SessionManager {
     if (!record) return this.warnManagedTerminal();
 
     await this.scanAll();
-    const context = await this.renameContext(record);
+    const context = await renameContext(
+      record,
+      (target, agent) => this.agentObserver.transcriptFor(target, agent),
+      (scope, error) => this.log(scope, error),
+    );
     if (context.agent && !context.messages.length) {
       this.output.appendLine(
         `[rename-context] ${record.tmuxSession}: no user messages; `
@@ -2510,7 +2212,7 @@ class SessionManager {
       if (choice === 'Open log') this.output.show();
       return;
     }
-    const provider = this.renameProvider(context.agent);
+    const provider = renameProvider(this.config().get('renameProvider', 'sameHarness'), context.agent);
     const fallbackTitle = normalizeContextTitle(context.localSource) || 'terminal';
     let result;
     let failure;
@@ -2519,7 +2221,11 @@ class SessionManager {
         location: vscode.ProgressLocation.Notification,
         title: `Renaming with ${providerLabel(provider)}...`,
         cancellable: false,
-      }, () => this.generateRenameTitle(provider, context.source, context.localSource));
+      }, () => generateRenameTitle(provider, context.source, context.localSource, {
+        vscode,
+        codexPath: this.codexPath(),
+        claudePath: this.claudePath(),
+      }));
     } catch (error) {
       this.log('rename-ai', error);
       failure = error;
@@ -2554,46 +2260,9 @@ class SessionManager {
     }
   }
 
-  renameAgent(record) {
-    const agents = (record.windows || []).flatMap((window) => (window.panes || []))
-      .map((pane) => pane.agent)
-      .filter(Boolean);
-    const selected = record.activeAgent && agents.find((agent) => (
-      agent.type === record.activeAgent.type && agent.sessionId === record.activeAgent.sessionId
-    ));
-    return selected
-      || agents.find((agent) => agent.active && agent.transcript)
-      || agents.find((agent) => agent.transcript)
-      || agents.find((agent) => agent.active)
-      || agents[0];
-  }
-
-  async transcriptForAgent(record, agent) {
-    if (!agent) return undefined;
-    if (agent.transcript && fs.existsSync(agent.transcript)) return agent.transcript;
-    let transcript;
-    if (agent.type === 'codex' && UUID_RE.test(agent.sessionId || '')) {
-      transcript = this.codexTranscriptCache.get(agent.sessionId)
-        || await findFileEndingWith(path.join(codexHome(), 'sessions'), `${agent.sessionId}.jsonl`);
-      if (transcript) this.codexTranscriptCache.set(agent.sessionId, transcript);
-    } else if (agent.type === 'claude' && UUID_RE.test(agent.sessionId || '')) {
-      const pane = (record.windows || []).flatMap((window) => window.panes || [])
-        .find((item) => item.agent && item.agent.type === agent.type
-          && item.agent.sessionId === agent.sessionId);
-      if (pane && pane.cwd) {
-        const candidate = path.join(
-          os.homedir(), '.claude', 'projects', encodeClaudeProject(pane.cwd), `${agent.sessionId}.jsonl`,
-        );
-        if (fs.existsSync(candidate)) transcript = candidate;
-      }
-    }
-    if (transcript) agent.transcript = transcript;
-    return transcript;
-  }
-
   async conversationPreviewForRecord(record) {
-    const agent = this.renameAgent(record) || sessionAgent(record);
-    const transcript = await this.transcriptForAgent(record, agent);
+    const agent = preferredRecordAgent(record) || sessionAgent(record);
+    const transcript = await this.agentObserver.transcriptFor(record, agent);
     let preview = [];
     if (agent && transcript) {
       const snapshot = await readJsonlTail(transcript);
@@ -2623,98 +2292,6 @@ class SessionManager {
     return result.entry;
   }
 
-  async renameContext(record) {
-    const agent = this.renameAgent(record);
-    const transcript = await this.transcriptForAgent(record, agent);
-
-    let messages = [];
-    let bytesRead = 0;
-    let error;
-    if (agent && transcript) {
-      try {
-        const result = await readRecentUserMessages(agent.type, transcript, 2);
-        messages = result.messages;
-        bytesRead = result.bytesRead;
-      } catch (readError) {
-        error = messageOf(readError);
-        this.log('rename-context', readError);
-      }
-    }
-    const fallback = record.sourceTitle || record.autoTitle || record.manualTitle || record.tmuxSession;
-    return {
-      agent,
-      messages,
-      transcript,
-      bytesRead,
-      error,
-      localSource: messages.length ? [...messages].reverse().join(' ') : fallback,
-      source: buildRenameSource(messages, fallback),
-    };
-  }
-
-  renameProvider(agent) {
-    const configured = this.config().get('renameProvider', 'sameHarness');
-    if (configured === 'local' || configured === 'vscode') return configured;
-    if (agent && (agent.type === 'codex' || agent.type === 'claude')) return agent.type;
-    return 'vscode';
-  }
-
-  async generateRenameTitle(provider, source, localSource = source) {
-    if (provider === 'local') {
-      return { title: normalizeContextTitle(localSource) || 'terminal', provider, model: 'deterministic' };
-    }
-
-    const prompt = renamePrompt(source);
-    let raw;
-    let model;
-    if (provider === 'codex') {
-      model = 'CLI default';
-      const args = [
-        'exec',
-        '--sandbox', 'read-only',
-        '--ephemeral',
-        '--ignore-user-config',
-        '--ignore-rules',
-        '--skip-git-repo-check',
-        '--color', 'never',
-        '-C', os.tmpdir(),
-        '-c', 'model_reasoning_effort="low"',
-        '-',
-      ];
-      raw = await execFileInputText(this.codexPath(), args, prompt, { timeout: 45000 });
-    } else if (provider === 'claude') {
-      model = 'CLI default';
-      const args = [
-        '-p',
-        '--safe-mode',
-        '--tools', '',
-        '--permission-mode', 'dontAsk',
-        '--no-session-persistence',
-        '--output-format', 'text',
-      ];
-      raw = await execFileInputText(this.claudePath(), args, prompt, { timeout: 45000, cwd: os.tmpdir() });
-    } else if (provider === 'vscode') {
-      const models = vscode.lm ? await vscode.lm.selectChatModels() : [];
-      if (!models.length) throw new Error('No VS Code language model is available');
-      const selected = models[0];
-      model = selected.name || selected.id || selected.family || 'language-model';
-      const response = await selected.sendRequest([
-        vscode.LanguageModelChatMessage.User(prompt),
-      ]);
-      raw = '';
-      for await (const chunk of response.text) {
-        raw += chunk;
-        if (raw.length > 160) break;
-      }
-    } else {
-      throw new Error(`Unsupported rename provider: ${provider}`);
-    }
-
-    const title = normalizeContextTitle(raw);
-    if (!title) throw new Error(`${providerLabel(provider)} returned an empty title`);
-    return { title, provider, model };
-  }
-
   codexPath() {
     return configuredExecutable(this.config(), 'codex');
   }
@@ -2726,8 +2303,15 @@ class SessionManager {
   async diagnoseRenameAI() {
     const record = this.activeRecord();
     if (record) await this.scanAll();
-    const context = record ? await this.renameContext(record) : undefined;
-    const preferred = this.renameProvider(context && context.agent);
+    const context = record ? await renameContext(
+      record,
+      (target, agent) => this.agentObserver.transcriptFor(target, agent),
+      (scope, error) => this.log(scope, error),
+    ) : undefined;
+    const preferred = renameProvider(
+      this.config().get('renameProvider', 'sameHarness'),
+      context && context.agent,
+    );
     const lines = [
       `[rename-diagnostic] ${new Date().toISOString()}`,
       `active managed tab: ${record ? record.tmuxSession : 'none'}`,
@@ -2804,7 +2388,7 @@ class SessionManager {
     }
     if (action === 'kill') {
       try {
-        await this.killTmuxSession(record.tmuxSession);
+        await this.tmux.killTmuxSession(record.tmuxSession);
       } catch (error) {
         this.log('close-kill', error);
         record.bridgeClosedAt = Date.now();
@@ -2821,20 +2405,20 @@ class SessionManager {
     }
     const wasPinned = Boolean(record.monitorPinned);
     this.records.delete(record.id);
-    this.monitorPreviewCache.delete(record.id);
+    this.monitor.previewCache.delete(record.id);
     this.cancelDraftCapture(record);
     this.deleteDraftsForRecord(record);
-    await Promise.all([this.persist(), this.persistDrafts(), this.updateMonitorContext()]);
-    if (wasPinned && !this.pinnedRecords().length && this.monitorView?.visible) {
-      await this.hideMonitor();
+    await Promise.all([this.persist(), this.persistDrafts(), this.monitor.updateContext()]);
+    if (wasPinned && !this.pinnedRecords().length && this.monitor.view?.visible) {
+      await this.monitor.hide();
     } else if (wasPinned) {
-      await this.refreshMonitor();
+      await this.monitor.refresh();
     }
     return true;
   }
 
   async attachExisting() {
-    const raw = await this.runTmux([
+    const raw = await this.tmux.runTmux([
       'list-sessions', '-F', '#{session_name}\t#{@ai-terminal-workspace}',
     ], true);
     const existing = new Set([...this.records.values()].map((record) => record.tmuxSession));
@@ -2842,7 +2426,7 @@ class SessionManager {
     for (const line of raw.split('\n').filter(Boolean)) {
       const [name, workspaceHash] = line.split('\t');
       if (!name || workspaceHash !== this.workspaceHash || existing.has(name)) continue;
-      const panes = (await this.runTmux([
+      const panes = (await this.tmux.runTmux([
         'list-panes', '-t', name, '-F', '#{pane_id}',
       ], true)).split('\n').filter(Boolean);
       items.push({
@@ -2863,9 +2447,9 @@ class SessionManager {
     if (!picked || !picked.length) return;
 
     for (const item of picked) {
-      const cwd = (await this.runTmux([
+      const cwd = (await this.tmux.runTmux([
         'display-message', '-p', '-t', `${item.name}:`, '#{pane_current_path}',
-      ], true)).trim() || getDefaultCwd();
+      ], true)).trim() || defaultWorkspaceCwd(vscode);
       const record = this.createRecord({
         tmuxSession: item.name,
         cwd,
@@ -2891,249 +2475,6 @@ class SessionManager {
     vscode.window.showWarningMessage('The active terminal is not managed by AI Terminal Sessions.');
   }
 
-  async ensureSession(record, dimensions) {
-    const current = this.ensurePromises.get(record.id);
-    if (current) return current;
-    const promise = this.ensureSessionImpl(record, dimensions).finally(() => {
-      this.ensurePromises.delete(record.id);
-    });
-    this.ensurePromises.set(record.id, promise);
-    return promise;
-  }
-
-  async ensureSessionImpl(record, dimensions) {
-    const alive = await this.tmuxHasSession(record.tmuxSession);
-    if (!alive) {
-      this.output.appendLine(`[restore] rebuilding ${record.tmuxSession}`);
-      await this.restoreTmuxSession(record, dimensions);
-      record.lastRestoredAt = Date.now();
-      this.schedulePersist();
-    }
-    await this.configureTmuxSession(record);
-    // A live tmux session can predate newly introduced pane options. Reapply
-    // the saved presentation on every attach so restored panes receive those
-    // options even when their persisted agent fingerprint did not change.
-    if (alive) await this.configurePanePresentation(record);
-    if (dimensions) await this.resizeSession(record, dimensions);
-  }
-
-  async tmuxHasSession(name) {
-    try {
-      await this.runTmux(['has-session', '-t', name]);
-      return true;
-    } catch (error) {
-      if (isMissingTmuxSessionError(error)) return false;
-      throw error;
-    }
-  }
-
-  async killTmuxSession(name) {
-    try {
-      await this.runTmux(['kill-session', '-t', name]);
-      return 'killed';
-    } catch (error) {
-      if (isMissingTmuxSessionError(error)) return 'missing';
-      throw error;
-    }
-  }
-
-  async restoreTmuxSession(record, dimensions) {
-    const savedWindows = Array.isArray(record.windows)
-      ? record.windows.filter((window) => Array.isArray(window.panes) && window.panes.length)
-      : [];
-    const fallbackWindow = {
-      name: 'shell', active: true, panes: [{ cwd: record.cwd, active: true }],
-    };
-    const savedWindow = savedWindows.find((window) => window.active) || savedWindows[0] || fallbackWindow;
-    const savedPanes = [...savedWindow.panes].sort((left, right) => left.index - right.index);
-    const savedPane = savedPanes[0];
-    // history-limit is captured when tmux creates a window. Set the global
-    // default in the same command queue before new-session so the first pane
-    // also receives the larger scrollback buffer on a fresh private server.
-    const args = [
-      'set-option', '-g', 'history-limit', String(DEFAULT_TMUX_HISTORY_LIMIT), ';',
-      'new-session', '-d', '-s', record.tmuxSession,
-      '-n', safeTmuxName(savedWindow.name || 'shell'),
-      '-c', existingDirectory(savedPane.cwd || record.cwd),
-    ];
-    if (dimensions) args.push('-x', String(dimensions.columns), '-y', String(dimensions.rows));
-    const command = this.restoreCommand(savedPane.agent);
-    if (command) args.push(command);
-    await this.runTmux(args);
-
-    const restoredPanes = [];
-    const firstPaneId = (await this.runTmux([
-      'display-message', '-p', '-t', `${record.tmuxSession}:.0`, '#{pane_id}',
-    ])).trim();
-    restoredPanes.push(this.restoredPaneRuntime(savedPane, firstPaneId));
-
-    for (const pane of savedPanes.slice(1)) {
-      const split = [
-        'split-window', '-d', '-P', '-F', '#{pane_id}',
-        '-t', `${record.tmuxSession}:`,
-        '-c', existingDirectory(pane.cwd || record.cwd),
-      ];
-      const paneCommand = this.restoreCommand(pane.agent);
-      if (paneCommand) split.push(paneCommand);
-      const paneId = (await this.runTmux(split)).trim().split('\n').filter(Boolean).pop();
-      restoredPanes.push(this.restoredPaneRuntime(pane, paneId));
-    }
-
-    const runtimeWindow = { ...savedWindow, panes: restoredPanes };
-    await this.configurePanePresentation({ ...record, windows: [runtimeWindow] });
-    if (savedWindow.layout && restoredPanes.length > 1) {
-      await this.runTmux([
-        'select-layout', '-t', `${record.tmuxSession}:`, savedWindow.layout,
-      ], true);
-    }
-    const activeIndex = Math.max(0, savedPanes.findIndex((pane) => pane.active));
-    const activePane = restoredPanes[activeIndex] || restoredPanes[0];
-    if (activePane && activePane.id) {
-      await this.runTmux(['select-pane', '-t', activePane.id], true);
-      record.activePaneId = activePane.logicalId;
-    }
-  }
-
-  restoredPaneRuntime(savedPane, paneId) {
-    const logicalId = savedPane.logicalId || crypto.randomUUID();
-    savedPane.logicalId = logicalId;
-    return {
-      ...savedPane,
-      id: paneId,
-      logicalId,
-      role: normalizePaneRole(savedPane.role, Boolean(savedPane.agent)),
-      restorePolicy: normalizeRestorePolicy(savedPane.restorePolicy, Boolean(savedPane.agent)),
-    };
-  }
-
-  restoreCommand(agent) {
-    if (!this.config().get('restoreAgents', true) || !agent || !agent.active || !UUID_RE.test(agent.sessionId || '')) {
-      return undefined;
-    }
-    const shell = resolveExecutable(process.env.SHELL || 'zsh', 'zsh');
-    let executable;
-    let args;
-    if (agent.type === 'claude') {
-      executable = this.claudePath();
-      args = ['--resume', agent.sessionId];
-    } else if (agent.type === 'codex') {
-      executable = this.codexPath();
-      args = ['resume', agent.sessionId];
-    } else {
-      return undefined;
-    }
-    const resume = [shellQuote(executable), ...args.map(shellQuote)].join(' ');
-    const command = `${resume}; exec ${shellQuote(shell)} -l`;
-    return `${shellQuote(shell)} -lic ${shellQuote(command)}`;
-  }
-
-  async configureTmuxSession(record) {
-    const copyCommand = `/bin/sh ${shellQuote(path.join(
-      this.context.extensionPath,
-      'copy-nonempty.sh',
-    ))}`;
-    // VS Code sends modified Enter as CSI-u. The private tmux server starts
-    // without a tmux.conf, so explicitly preserve extended keys for TUIs.
-    await this.runTmux([
-      'set-option', '-s', 'terminal-features[100]', 'xterm*:extkeys', ';',
-      'set-option', '-s', 'extended-keys-format', 'csi-u', ';',
-      'set-option', '-t', record.tmuxSession, 'extended-keys', 'always', ';',
-      'set-option', '-t', record.tmuxSession, '@ai-terminal-id', record.id, ';',
-      'set-option', '-t', record.tmuxSession, '@ai-terminal-workspace', this.workspaceHash, ';',
-      'set-option', '-t', record.tmuxSession, 'destroy-unattached', 'off', ';',
-      'set-option', '-t', record.tmuxSession, 'status', 'off', ';',
-      'set-option', '-t', record.tmuxSession, 'set-titles', 'off', ';',
-      'set-option', '-t', record.tmuxSession, 'prefix', 'C-b', ';',
-      'set-option', '-t', record.tmuxSession, 'prefix2', 'None', ';',
-      'set-option', '-t', record.tmuxSession, 'mouse', 'on', ';',
-      'set-option', '-s', 'copy-command', copyCommand, ';',
-      // Codex and shells use tmux scrollback. Claude owns its alternate-screen
-      // scroll UI, so panes marked "application" receive the mouse event.
-      'bind-key', '-T', 'root', 'WheelUpPane',
-      'if-shell', '-F', '#{==:#{@ai-pane-wheel-mode},application}',
-      'send-keys -M', 'copy-mode -e -t =', ';',
-      'bind-key', '-T', 'root', 'MouseDrag1Pane', 'copy-mode', '-M', '-t', '=', ';',
-      'bind-key', '-T', 'root', 'DoubleClick1Pane',
-      'select-pane', '-t', '=', '\\;',
-      'copy-mode', '-H', '-t', '=', '\\;',
-      'send-keys', '-X', '-t', '=', 'select-word', '\\;',
-      'send-keys', '-X', '-t', '=', 'copy-pipe-and-cancel', ';',
-      'bind-key', '-T', 'copy-mode', 'MouseDragEnd1Pane',
-      'send-keys', '-X', 'copy-pipe-and-cancel', ';',
-      'bind-key', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane',
-      'send-keys', '-X', 'copy-pipe-and-cancel', ';',
-      'bind-key', '-T', 'copy-mode', 'v', 'send-keys', '-X', 'begin-selection', ';',
-      'bind-key', '-T', 'copy-mode', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel', ';',
-      'bind-key', '-T', 'copy-mode-vi', 'v', 'send-keys', '-X', 'begin-selection', ';',
-      'bind-key', '-T', 'copy-mode-vi', 'y', 'send-keys', '-X', 'copy-pipe-and-cancel', ';',
-      'unbind-key', '-q', '-T', 'root', 'MouseDown3Pane', ';',
-      'unbind-key', '-q', '-T', 'root', 'M-MouseDown3Pane', ';',
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'window-size', 'latest', ';',
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'automatic-rename', 'off', ';',
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-status',
-      sessionPanes(record).length > 1 ? 'top' : 'off', ';',
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-format',
-      ' #{?pane_active,#[bold],}#{pane_index} #{@ai-pane-role} ',
-    ]);
-  }
-
-  async configurePanePresentation(record) {
-    const panes = sessionPanes(record);
-    const args = [];
-    for (const pane of panes) {
-      if (!pane.id) continue;
-      if (args.length) args.push(';');
-      args.push(
-        'set-option', '-p', '-t', pane.id, '@ai-pane-id', pane.logicalId || crypto.randomUUID(), ';',
-        'set-option', '-p', '-t', pane.id, '@ai-pane-role', pane.role || 'shell', ';',
-        'set-option', '-p', '-t', pane.id, '@ai-pane-agent', pane.agent && pane.agent.type || 'shell', ';',
-        'set-option', '-p', '-t', pane.id, '@ai-pane-wheel-mode',
-        pane.agent && pane.agent.active !== false && pane.agent.type === 'claude'
-          ? 'application'
-          : 'history',
-      );
-    }
-    if (args.length) args.push(';');
-    args.push(
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-status',
-      panes.length > 1 ? 'top' : 'off', ';',
-      'set-window-option', '-t', `${record.tmuxSession}:`, 'pane-border-format',
-      ' #{?pane_active,#[bold],}#{pane_index} #{@ai-pane-role} ',
-    );
-    await this.runTmux(args, true);
-  }
-
-  async resizeSession(record, dimensions) {
-    if (!dimensions || dimensions.columns < 2 || dimensions.rows < 2) return;
-    await this.runTmux([
-      'resize-window', '-t', `${record.tmuxSession}:`,
-      '-x', String(dimensions.columns), '-y', String(dimensions.rows),
-    ], true);
-  }
-
-  async runTmux(args, allowFailure = false) {
-    try {
-      return await execFileText(this.tmuxPath(), this.tmuxArguments(args), { timeout: 6000 });
-    } catch (error) {
-      if (allowFailure) {
-        if (!isMissingTmuxSessionError(error)) {
-          this.output.appendLine(`[tmux-best-effort] ${compactDiagnostic(messageOf(error))}`);
-        }
-        return '';
-      }
-      throw error;
-    }
-  }
-
-  async runTmuxInput(args, input) {
-    return execFileInputText(
-      this.tmuxPath(),
-      this.tmuxArguments(args),
-      input,
-      { timeout: 6000 },
-    );
-  }
-
   async scanAll() {
     if (this.scanPromise) return this.scanPromise;
     if (this.deactivating || !this.records.size) return undefined;
@@ -3145,8 +2486,8 @@ class SessionManager {
 
   async scanAllImpl() {
     const nativeRenameChanged = this.captureNativeRenames();
-    await this.loadCodexThreadNames();
-    const panesRaw = await this.runTmux([
+    await this.agentObserver.loadCodexThreadNames();
+    const panesRaw = await this.tmux.runTmux([
       'list-panes', '-a', '-F',
       '#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_layout}\t#{pane_id}\t#{@ai-pane-id}\t#{pane_index}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}\t#{pane_title}\t#{pane_in_mode}\t#{pane_mode}\t#{scroll_position}\t#{pane_start_command}',
     ], true);
@@ -3197,7 +2538,7 @@ class SessionManager {
         'set-option', '-p', '-t', pane.id, '@ai-pane-id', pane.logicalId,
       );
     }
-    if (commands.length) await this.runTmux(commands, true);
+    if (commands.length) await this.tmux.runTmux(commands, true);
   }
 
   captureNativeRename(record, terminal, pty, now = Date.now(), force = false) {
@@ -3266,7 +2607,7 @@ class SessionManager {
             || Number(record.lastAcknowledgedInterruptedAt) || 0,
         };
       }
-      const observedAgent = await this.detectAgent(pane, processTable, now, record, previousAgent);
+      const observedAgent = await this.agentObserver.detectAgent(pane, processTable, now, record, previousAgent);
       let agent = observedAgent && mergeObservedAgent(previousAgent, observedAgent, now);
       if (!agent && previousAgent) {
         const grace = now - (previousAgent.lastSeenAt || 0) < 10000;
@@ -3351,175 +2692,13 @@ class SessionManager {
     this.refreshPtyName(record);
     if (this.activeRecord()?.id === record.id) this.updateManagedTerminalContext(record);
     if (oldPanePresentation !== panePresentationFingerprint(record)) {
-      this.configurePanePresentation(record).catch((error) => this.log('pane-presentation', error));
+      this.tmux.configurePanePresentation(record).catch((error) => this.log('pane-presentation', error));
     }
 
     for (const event of events) {
       this.notifyReady(record, event.status, event.agent.title);
     }
     return oldFingerprint !== record.fingerprint;
-  }
-
-  async detectAgent(pane, processTable, now, record, previousAgent) {
-    const processes = descendantsOf(Number(pane.pid), processTable);
-    const claudeCandidates = processes.filter((item) => matchesExecutable(item, 'claude'));
-    for (const processInfo of claudeCandidates) {
-      const agent = await this.resolveClaudeAgent(processInfo, pane, now);
-      if (agent) return agent;
-    }
-
-    const codexCandidates = processes.filter((item) => matchesExecutable(item, 'codex'));
-    for (const processInfo of codexCandidates) {
-      const agent = await this.resolveCodexAgent(processInfo, pane, now, record, previousAgent);
-      if (agent) return agent;
-    }
-    return undefined;
-  }
-
-  async resolveClaudeAgent(processInfo, pane, now) {
-    let metadata;
-    try {
-      const file = path.join(os.homedir(), '.claude', 'sessions', `${processInfo.pid}.json`);
-      metadata = JSON.parse(await fs.promises.readFile(file, 'utf8'));
-    } catch {
-      metadata = {};
-    }
-    const argId = processInfo.command.match(/--session-id\s+([0-9a-f-]{36})/i)?.[1];
-    const sessionId = metadata.sessionId || argId;
-    if (!UUID_RE.test(sessionId || '')) {
-      return {
-        type: 'claude', sessionId: '', pid: processInfo.pid, process: 'claude',
-        status: 'idle', title: 'Claude Code', active: true, lastSeenAt: now,
-      };
-    }
-
-    const cwd = metadata.cwd || pane.cwd;
-    const transcript = path.join(
-      os.homedir(), '.claude', 'projects', encodeClaudeProject(cwd), `${sessionId}.jsonl`,
-    );
-    const journal = await inspectClaudeTranscript(transcript, metadata.status);
-    return {
-      type: 'claude',
-      sessionId,
-      pid: processInfo.pid,
-      process: 'claude',
-      status: journal.status,
-      title: metadata.name || journal.title || path.basename(cwd),
-      transcript,
-      active: true,
-      lastSeenAt: now,
-      lastActivityAt: journal.lastActivityAt,
-      ...turnTimingFields(journal),
-    };
-  }
-
-  async resolveCodexAgent(processInfo, pane, now, record, previousAgent) {
-    const cacheKey = `${processInfo.pid}:${processInfo.command}`;
-    const cached = this.codexPidCache.get(cacheKey);
-    let sessionId = cached && cached.sessionId;
-    if (codexSessionCacheExpired(cached, now, CODEX_SESSION_REFRESH_MS)) {
-      const argId = processInfo.command.match(/\bresume\s+([0-9a-f-]{36})\b/i)?.[1];
-      const detected = await this.queryCodexSessionId(
-        processInfo.pid,
-        previousAgent && previousAgent.sessionId || codexSessionHint(record),
-      );
-      sessionId = UUID_RE.test(detected || '')
-        ? detected
-        : UUID_RE.test(argId || '') ? argId : sessionId;
-      this.codexPidCache.set(cacheKey, { at: now, sessionId });
-    }
-    if (!UUID_RE.test(sessionId || '')) {
-      return {
-        type: 'codex', sessionId: '', pid: processInfo.pid, process: 'codex',
-        status: 'idle', title: 'Codex', active: true, lastSeenAt: now,
-      };
-    }
-
-    let transcript = this.codexTranscriptCache.get(sessionId);
-    if (!transcript || !fs.existsSync(transcript)) {
-      transcript = await findFileEndingWith(path.join(codexHome(), 'sessions'), `${sessionId}.jsonl`);
-      if (transcript) this.codexTranscriptCache.set(sessionId, transcript);
-    }
-    const journal = await inspectCodexTranscript(transcript);
-    return {
-      type: 'codex',
-      sessionId,
-      pid: processInfo.pid,
-      process: 'codex',
-      status: journal.status,
-      title: this.codexThreadNames.get(sessionId) || journal.title || path.basename(pane.cwd),
-      transcript,
-      active: true,
-      lastSeenAt: now,
-      lastActivityAt: journal.lastActivityAt,
-      ...turnTimingFields(journal),
-    };
-  }
-
-  async queryCodexSessionId(pid, preferredSessionId) {
-    const db = codexLogDatabase();
-    if (db) {
-      const query = `SELECT thread_id FROM logs WHERE process_uuid LIKE 'pid:${Number(pid)}:%' AND thread_id IS NOT NULL ORDER BY ts DESC LIMIT 1;`;
-      try {
-        const raw = await execFileText(resolveExecutable('sqlite3', 'sqlite3'), [
-          '-readonly', '-noheader', '-cmd', '.timeout 100', db, query,
-        ], { timeout: 2000 });
-        const sessionId = raw.trim().split('\n')
-          .find((line) => UUID_RE.test(line.trim()))?.trim();
-        if (sessionId) return sessionId;
-      } catch (error) {
-        this.log('codex-sqlite', error);
-      }
-    }
-    return this.queryCodexOpenSessionId(pid, preferredSessionId);
-  }
-
-  async queryCodexOpenSessionId(pid, preferredSessionId) {
-    let raw;
-    try {
-      raw = await execFileText(resolveExecutable('lsof', 'lsof'), [
-        '-p', String(Number(pid)), '-Fn',
-      ], { timeout: 2000 });
-    } catch {
-      return undefined;
-    }
-    const transcripts = codexTranscriptPathsFromLsof(raw, codexHome());
-    if (!transcripts.length) return undefined;
-    const candidates = [];
-    for (const transcript of transcripts) {
-      try {
-        const [prefix, stat] = await Promise.all([
-          readFilePrefix(transcript),
-          fs.promises.stat(transcript),
-        ]);
-        const sessionId = codexSessionIdFromMetadata(prefix)
-          || codexSessionIdFromTranscriptPath(transcript);
-        if (sessionId) candidates.push({ sessionId, modifiedAt: stat.mtimeMs });
-      } catch {}
-    }
-    return newestCodexSessionCandidate(candidates, preferredSessionId);
-  }
-
-  async loadCodexThreadNames() {
-    const file = path.join(codexHome(), 'session_index.jsonl');
-    let stat;
-    try {
-      stat = await fs.promises.stat(file);
-    } catch {
-      return;
-    }
-    if (stat.mtimeMs === this.codexIndexMtime) return;
-    const names = new Map();
-    const text = await fs.promises.readFile(file, 'utf8');
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const item = JSON.parse(line);
-        if (item.id && item.thread_name) names.set(item.id, item.thread_name);
-      } catch {}
-    }
-    this.codexThreadNames = names;
-    this.codexIndexMtime = stat.mtimeMs;
   }
 
   updateAutomaticTitle(record, agent, now) {
@@ -3625,7 +2804,7 @@ class SessionManager {
 
   async liveFocusedPane(record) {
     let pane = focusedPane(record);
-    const raw = (await this.runTmux([
+    const raw = (await this.tmux.runTmux([
       'display-message', '-p', '-t', `${record.tmuxSession}:`,
       '#{pane_id}\t#{@ai-pane-id}',
     ], true)).trim();
@@ -3673,7 +2852,7 @@ class SessionManager {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     if (this.tabOrderTimer) clearTimeout(this.tabOrderTimer);
     if (this.workingAnimationTimer) clearInterval(this.workingAnimationTimer);
-    this.stopMonitorRefresh();
+    this.monitor.stop();
     const draftRecords = new Map();
     const pendingDraftIds = new Set([
       ...this.draftCaptureTimers.keys(),
@@ -3695,443 +2874,8 @@ class SessionManager {
       this.captureDraft(record).catch((error) => this.log('draft-shutdown', error))
     )));
     for (const pty of this.ptys.values()) pty.dispose();
-    await Promise.all([this.persist(), this.persistDrafts(), this.archivePersistQueue]);
+    await Promise.all([this.persist(), this.persistDrafts(), this.recoveryFiles.flush()]);
   }
-}
-
-class ManagedTmuxPty {
-  constructor(manager, record) {
-    this.manager = manager;
-    this.record = record;
-    this.writeEmitter = new vscode.EventEmitter();
-    this.closeEmitter = new vscode.EventEmitter();
-    this.nameEmitter = new vscode.EventEmitter();
-    this.onDidWrite = this.writeEmitter.event;
-    this.onDidClose = this.closeEmitter.event;
-    this.onDidChangeName = this.nameEmitter.event;
-    this.child = undefined;
-    this.childDisposables = [];
-    this.closed = false;
-    this.opened = false;
-    this.lastName = '';
-    this.lastNameChangedAt = 0;
-    this.lastCapturedNativeName = '';
-    this.pendingTmuxDimensions = undefined;
-    this.resizeTimer = undefined;
-    this.resizeInFlight = false;
-    this.lastResizeAt = 0;
-    this.ignoreOutputActivityUntil = 0;
-    this.bracketedPasteActive = false;
-    this.dimensions = { columns: 80, rows: 24 };
-  }
-
-  async open(initialDimensions) {
-    this.opened = true;
-    if (initialDimensions) this.dimensions = initialDimensions;
-    this.setName(this.manager.formatTerminalName(this.record));
-    try {
-      await this.manager.ensureSession(this.record, initialDimensions);
-      if (this.closed) return;
-      this.spawnBridge();
-      await this.primeDisplay();
-    } catch (error) {
-      this.manager.log('pty-open', error);
-      this.writeEmitter.fire(`\r\nAI Terminal Sessions: ${messageOf(error)}\r\n`);
-      this.closeEmitter.fire(1);
-    }
-  }
-
-  spawnBridge() {
-    const nodePty = loadNodePty();
-    const child = nodePty.spawn(this.manager.tmuxPath(), this.manager.tmuxArguments([
-      'attach-session', '-t', this.record.tmuxSession,
-    ]), {
-      name: 'xterm-256color',
-      cols: this.dimensions.columns,
-      rows: this.dimensions.rows,
-      cwd: existingDirectory(this.record.cwd),
-      env: { ...process.env, TERM: 'xterm-256color' },
-    });
-    this.child = child;
-    this.ignoreOutputActivityUntil = Date.now() + 10000;
-    this.childDisposables = [
-      child.onData((data) => {
-        this.writeEmitter.fire(data);
-        const now = Date.now();
-        if (!hasAgentContext(this.record)
-          && now >= this.ignoreOutputActivityUntil
-          && now - this.lastResizeAt >= 750
-          && hasMeaningfulTerminalOutput(data)) {
-          this.manager.noteTerminalActivity(this.record, 'output');
-        }
-      }),
-      child.onExit((event) => {
-        this.child = undefined;
-        if (!this.closed) this.closeEmitter.fire(event.exitCode);
-      }),
-    ];
-  }
-
-  bridgeReady() {
-    return this.opened && Boolean(this.child) && !this.closed;
-  }
-
-  async primeDisplay() {
-    // tmux normally redraws immediately on attach, but a background VS Code
-    // terminal can miss that first burst while its renderer is still mounting.
-    // Replaying the visible pane makes the attach deterministic; subsequent
-    // output continues through the live node-pty bridge.
-    await delay(40);
-    await this.replayVisiblePane();
-  }
-
-  async replayVisiblePane() {
-    if (!this.bridgeReady()) return;
-    const snapshot = await this.manager.runTmux([
-      'capture-pane', '-p', '-e', '-t', `${this.record.tmuxSession}:`,
-    ], true);
-    if (!snapshot || !snapshot.trim()) return;
-    this.writeEmitter.fire(`\x1b[2J\x1b[H${snapshot.replace(/\n/g, '\r\n')}`);
-  }
-
-  handleInput(data) {
-    if (this.child) this.child.write(data);
-    const input = analyzeTerminalInput(data, this.bracketedPasteActive);
-    this.bracketedPasteActive = input.pasteActive;
-    if (input.submitted) {
-      this.manager.acknowledgeSubmittedInput(this.record)
-        .catch((error) => this.manager.log('attention-submit', error));
-      this.manager.cancelDraftCapture(this.record);
-    } else if (input.editing) {
-      this.manager.scheduleDraftCapture(this.record);
-    }
-  }
-
-  setDimensions(dimensions) {
-    if (!dimensions || dimensions.columns < 2 || dimensions.rows < 2) return;
-    this.dimensions = dimensions;
-    this.lastResizeAt = Date.now();
-    if (this.child) {
-      try { this.child.resize(dimensions.columns, dimensions.rows); } catch (error) {
-        this.manager.log('resize', error);
-      }
-    }
-    this.queueTmuxResize(dimensions);
-  }
-
-  queueTmuxResize(dimensions) {
-    this.pendingTmuxDimensions = { ...dimensions };
-    if (this.closed || this.resizeTimer || this.resizeInFlight) return;
-    this.resizeTimer = setTimeout(() => {
-      this.resizeTimer = undefined;
-      this.flushTmuxResize().catch((error) => this.manager.log('resize-tmux', error));
-    }, 50);
-  }
-
-  async flushTmuxResize() {
-    if (this.closed || this.resizeInFlight || !this.pendingTmuxDimensions) return;
-    const dimensions = this.pendingTmuxDimensions;
-    this.pendingTmuxDimensions = undefined;
-    this.resizeInFlight = true;
-    try {
-      await this.manager.resizeSession(this.record, dimensions);
-    } finally {
-      this.resizeInFlight = false;
-      if (this.pendingTmuxDimensions) this.queueTmuxResize(this.pendingTmuxDimensions);
-    }
-  }
-
-  setName(name) {
-    if (!name || name === this.lastName) return;
-    this.lastName = name;
-    this.lastNameChangedAt = Date.now();
-    if (this.opened) this.nameEmitter.fire(name);
-  }
-
-  close() {
-    this.dispose();
-  }
-
-  dispose() {
-    this.closed = true;
-    if (this.resizeTimer) clearTimeout(this.resizeTimer);
-    this.resizeTimer = undefined;
-    this.pendingTmuxDimensions = undefined;
-    for (const disposable of this.childDisposables) {
-      try { disposable.dispose(); } catch {}
-    }
-    this.childDisposables = [];
-    const child = this.child;
-    this.child = undefined;
-    if (child) {
-      try { child.kill('SIGTERM'); } catch {}
-    }
-    this.writeEmitter.dispose();
-    this.closeEmitter.dispose();
-    this.nameEmitter.dispose();
-  }
-}
-
-/* tmux owns the processes; node-pty is only the disposable attach client. */
-function loadNodePty() {
-  if (nodePtyModule) return nodePtyModule;
-  const candidates = [];
-  if (vscode.env && vscode.env.appRoot) {
-    candidates.push(path.join(vscode.env.appRoot, 'node_modules', 'node-pty'));
-  }
-  candidates.push('node-pty');
-  for (const candidate of candidates) {
-    try {
-      nodePtyModule = require(candidate);
-      return nodePtyModule;
-    } catch {}
-  }
-  throw new Error('node-pty was not found in the VS Code installation');
-}
-
-function parseTmuxPanes(raw) {
-  return raw.split('\n').filter(Boolean).map((line) => {
-    const parts = line.split('\t');
-    return {
-      session: parts[0],
-      windowId: parts[1],
-      windowIndex: Number(parts[2]),
-      windowName: parts[3],
-      windowActive: parts[4] === '1',
-      layout: parts[5],
-      id: parts[6],
-      logicalId: parts[7],
-      paneIndex: Number(parts[8]),
-      pid: Number(parts[9]),
-      cwd: parts[10],
-      command: parts[11],
-      active: parts[12] === '1',
-      title: parts[13],
-      inMode: parts[14] === '1',
-      mode: parts[15],
-      scrollPosition: Math.max(0, Number(parts[16]) || 0),
-      startCommand: parts.slice(17).join('\t'),
-    };
-  }).filter((pane) => pane.session && pane.id);
-}
-
-function panePresentationFingerprint(record) {
-  return sessionPanes(record).map((pane) => [
-    pane.logicalId || pane.id,
-    pane.role || 'shell',
-    pane.agent && pane.agent.active !== false ? pane.agent.type : 'shell',
-  ].join(':')).join('|');
-}
-
-function paneInCopyMode(pane) {
-  if (!pane || !pane.inMode) return false;
-  return !pane.mode || /^(?:copy|view)-mode/.test(pane.mode);
-}
-
-function groupPanesBySession(panes) {
-  const result = new Map();
-  for (const pane of panes) {
-    if (!result.has(pane.session)) result.set(pane.session, []);
-    result.get(pane.session).push(pane);
-  }
-  return result;
-}
-
-async function readProcessTable() {
-  let raw = '';
-  try {
-    raw = await execFileText(resolveExecutable('ps', 'ps'), [
-      '-axo', 'pid=,ppid=,comm=,command=',
-    ], { timeout: 3000 });
-  } catch {
-    return { byPid: new Map(), children: new Map() };
-  }
-  const byPid = new Map();
-  const children = new Map();
-  for (const line of raw.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
-    if (!match) continue;
-    const item = { pid: Number(match[1]), ppid: Number(match[2]), comm: match[3], command: match[4] };
-    byPid.set(item.pid, item);
-    if (!children.has(item.ppid)) children.set(item.ppid, []);
-    children.get(item.ppid).push(item);
-  }
-  return { byPid, children };
-}
-
-function descendantsOf(rootPid, table) {
-  const root = table.byPid.get(rootPid);
-  const result = root ? [root] : [];
-  let frontier = root ? [root] : [{ pid: rootPid }];
-  const seen = new Set([rootPid]);
-  for (let depth = 0; depth < 7 && frontier.length; depth += 1) {
-    const next = [];
-    for (const parent of frontier) {
-      for (const child of table.children.get(parent.pid) || []) {
-        if (seen.has(child.pid)) continue;
-        seen.add(child.pid);
-        result.push(child);
-        next.push(child);
-      }
-    }
-    frontier = next;
-  }
-  return result;
-}
-
-async function inspectClaudeTranscript(file, metadataStatus) {
-  const snapshot = await readJsonlTail(file);
-  const transcriptActivityAt = latestTranscriptActivity(snapshot.entries, 'claude') || snapshot.modifiedAt;
-  const transcriptAgeMs = transcriptActivityAt ? Math.max(0, Date.now() - transcriptActivityAt) : 0;
-  const timing = claudeTurnTiming(snapshot.entries);
-  let status = timing.status || (metadataStatus ? 'running' : 'idle');
-  let title;
-  let lastToolUse = false;
-  let lastAssistantEndedTurn = false;
-  for (const entry of snapshot.entries) {
-    if (entry.type === 'custom-title' && entry.customTitle) title = entry.customTitle;
-    const message = entry.message;
-    if (!message || !message.role) continue;
-    const items = Array.isArray(message.content)
-      ? message.content
-      : typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : [];
-    if (!title && message.role === 'user') {
-      const text = typeof message.content === 'string'
-        ? message.content
-        : items.find((item) => item.type === 'text')?.text;
-      if (isUsefulPrompt(text)) title = text;
-    }
-    if (message.role === 'assistant') {
-      lastToolUse = items.some((item) => item.type === 'tool_use');
-      lastAssistantEndedTurn = message.stop_reason === 'end_turn'
-        && items.some((item) => item.type === 'text');
-    } else if (message.role === 'user') {
-      lastToolUse = false;
-      lastAssistantEndedTurn = false;
-    }
-  }
-  if (!timing.status && metadataStatus === 'idle' && lastAssistantEndedTurn) status = 'done';
-  if (metadataStatus && metadataStatus !== 'idle' && lastToolUse && transcriptAgeMs >= 3000) status = 'waiting';
-  return { status, title, lastActivityAt: transcriptActivityAt || undefined, ...timing };
-}
-
-async function inspectCodexTranscript(file) {
-  const snapshot = await readJsonlTail(file);
-  const transcriptActivityAt = latestTranscriptActivity(snapshot.entries, 'codex') || snapshot.modifiedAt;
-  const transcriptAgeMs = transcriptActivityAt ? Math.max(0, Date.now() - transcriptActivityAt) : 0;
-  const timing = codexTurnTiming(snapshot.entries);
-  const usesTaskBoundaries = snapshot.entries.some((entry) => entry && entry.type === 'event_msg');
-  let legacyStatus = 'running';
-  let title;
-  let lastToolCall = false;
-  for (const entry of snapshot.entries) {
-    const payload = entry.payload || {};
-    if (!title) {
-      if (entry.type === 'event_msg' && payload.type === 'user_message' && isUsefulPrompt(payload.message)) {
-        title = payload.message;
-      } else if (entry.type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
-        const text = Array.isArray(payload.content)
-          ? payload.content.filter((item) => item.type === 'input_text').map((item) => item.text || '').join('\n')
-          : '';
-        if (isUsefulPrompt(text)) title = text;
-      }
-    }
-    let nextStatus;
-    let toolCall = false;
-    if (entry.type === 'event_msg') {
-      if (payload.type === 'task_complete') nextStatus = 'done';
-      else if (payload.type === 'turn_aborted') nextStatus = 'interrupted';
-      else if (payload.type === 'task_started' || payload.type === 'user_message') nextStatus = 'running';
-      else if (payload.type === 'agent_message') nextStatus = payload.phase === 'final_answer' ? 'done' : 'running';
-    } else if (entry.type === 'response_item') {
-      if (payload.type === 'message' && payload.role !== 'developer') {
-        nextStatus = payload.role === 'assistant' && payload.phase === 'final_answer' ? 'done' : 'running';
-      } else if (['function_call', 'function_call_output', 'reasoning', 'custom_tool_call', 'custom_tool_call_output', 'web_search_call'].includes(payload.type)) {
-        nextStatus = 'running';
-        toolCall = payload.type === 'function_call';
-      }
-    } else if (['message', 'function_call', 'function_call_output', 'reasoning'].includes(entry.type)) {
-      nextStatus = 'running';
-      toolCall = entry.type === 'function_call';
-    }
-    if (nextStatus) {
-      legacyStatus = nextStatus;
-      lastToolCall = toolCall;
-    }
-  }
-  let status = timing.status || (usesTaskBoundaries && legacyStatus === 'done'
-    ? 'running'
-    : legacyStatus);
-  if (status === 'running' && lastToolCall && transcriptAgeMs >= 3000) status = 'waiting';
-  return { status, title, lastActivityAt: transcriptActivityAt || undefined, ...timing };
-}
-
-function turnTimingFields(journal) {
-  if (!journal) return {};
-  const result = {};
-  for (const field of ['turnStartedAt', 'turnCompletedAt', 'turnDurationMs']) {
-    const value = Number(journal[field]);
-    if (Number.isFinite(value) && value > 0) result[field] = value;
-  }
-  return result;
-}
-
-async function readJsonlTail(file, maxBytes = 512 * 1024) {
-  if (!file) return { entries: [], ageMs: 0, modifiedAt: 0 };
-  let handle;
-  try {
-    const stat = await fs.promises.stat(file);
-    const start = Math.max(0, stat.size - maxBytes);
-    const length = stat.size - start;
-    const buffer = Buffer.alloc(length);
-    handle = await fs.promises.open(file, 'r');
-    await handle.read(buffer, 0, length, start);
-    let text = buffer.toString('utf8');
-    if (start > 0) text = text.slice(Math.max(0, text.indexOf('\n') + 1));
-    const entries = [];
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      try { entries.push(JSON.parse(line)); } catch {}
-    }
-    return { entries, ageMs: Math.max(0, Date.now() - stat.mtimeMs), modifiedAt: stat.mtimeMs };
-  } catch {
-    return { entries: [], ageMs: 0, modifiedAt: 0 };
-  } finally {
-    if (handle) await handle.close();
-  }
-}
-
-async function readFilePrefix(file, maxBytes = 256 * 1024) {
-  let handle;
-  try {
-    handle = await fs.promises.open(file, 'r');
-    const stat = await handle.stat();
-    const length = Math.min(stat.size, maxBytes);
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, 0);
-    return buffer.toString('utf8');
-  } finally {
-    if (handle) await handle.close();
-  }
-}
-
-async function findFileEndingWith(root, suffix) {
-  let entries;
-  try {
-    entries = await fs.promises.readdir(root, { withFileTypes: true });
-  } catch {
-    return undefined;
-  }
-  entries.sort((a, b) => b.name.localeCompare(a.name));
-  for (const entry of entries) {
-    const full = path.join(root, entry.name);
-    if (entry.isFile() && entry.name.endsWith(suffix)) return full;
-    if (entry.isDirectory()) {
-      const found = await findFileEndingWith(full, suffix);
-      if (found) return found;
-    }
-  }
-  return undefined;
 }
 
 function shortTitle(input) {
@@ -4156,16 +2900,6 @@ function shortTitle(input) {
 function titleWord(word) {
   if (/^[A-Z0-9]{2,}$/.test(word)) return word;
   return word.charAt(0).toLocaleUpperCase() + word.slice(1).toLocaleLowerCase();
-}
-
-function isUsefulPrompt(text) {
-  if (!text || typeof text !== 'string') return false;
-  const value = text.trim();
-  return value.length > 1
-    && !value.startsWith('<')
-    && !value.startsWith('{')
-    && !value.startsWith('# AGENTS.md')
-    && !value.startsWith('[Request interrupted');
 }
 
 function fingerprintRecord(record) {
@@ -4231,13 +2965,13 @@ function fingerprintRecord(record) {
 function getWorkspaceKey() {
   if (vscode.workspace.workspaceFile) return vscode.workspace.workspaceFile.toString();
   const folders = (vscode.workspace.workspaceFolders || []).map((folder) => folder.uri.toString()).sort();
-  return folders.length ? folders.join('|') : `folderless:${getDefaultCwd()}`;
+  return folders.length ? folders.join('|') : `folderless:${defaultWorkspaceCwd(vscode)}`;
 }
 
 function getWorkspaceName() {
   if (vscode.workspace.name) return vscode.workspace.name;
   const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
-  return folder ? folder.name : path.basename(getDefaultCwd()) || 'terminal';
+  return folder ? folder.name : path.basename(defaultWorkspaceCwd(vscode)) || 'terminal';
 }
 
 function currentWorkspaceRoots() {
@@ -4245,27 +2979,6 @@ function currentWorkspaceRoots() {
     name: folder.name,
     fsPath: folder.uri.fsPath,
   })).filter((root) => root.fsPath);
-}
-
-function getDefaultCwd() {
-  const editor = vscode.window.activeTextEditor;
-  if (editor) {
-    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-    if (folder) return folder.uri.fsPath;
-  }
-  const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
-  return folder ? folder.uri.fsPath : os.homedir();
-}
-
-function existingDirectory(candidate) {
-  try {
-    if (candidate && fs.statSync(candidate).isDirectory()) return candidate;
-  } catch {}
-  return getDefaultCwd();
-}
-
-function safeTmuxName(value) {
-  return normalizeWhitespace(value).replace(/[:.]/g, '-').slice(0, 50) || 'shell';
 }
 
 function slug(value) {
@@ -4278,57 +2991,12 @@ function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function encodeClaudeProject(value) {
-  return String(value || '').replace(/[/._]/g, '-');
-}
-
-function codexHome() {
-  return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-}
-
-function codexSessionHint(record) {
-  const candidates = [];
-  if (record && record.activeAgent && record.activeAgent.type === 'codex') {
-    candidates.push(record.activeAgent.sessionId);
-  }
-  for (const window of record && Array.isArray(record.windows) ? record.windows : []) {
-    for (const pane of Array.isArray(window.panes) ? window.panes : []) {
-      if (pane.agent && pane.agent.type === 'codex') candidates.push(pane.agent.sessionId);
-    }
-  }
-  candidates.push(record && record.titleSourceSessionId);
-  return candidates.find((sessionId) => UUID_RE.test(sessionId || ''));
-}
-
-function codexLogDatabase() {
-  let files;
-  try {
-    files = fs.readdirSync(codexHome());
-  } catch {
-    return undefined;
-  }
-  const candidates = files.map((name) => {
-    const match = name.match(/^logs_(\d+)\.sqlite$/);
-    return match ? { name, generation: Number(match[1]) } : undefined;
-  }).filter(Boolean).sort((a, b) => b.generation - a.generation);
-  return candidates.length ? path.join(codexHome(), candidates[0].name) : undefined;
-}
-
 function hashText(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-function messageOf(error) {
-  if (!error) return 'unknown error';
-  return error.stderr || error.message || String(error);
-}
-
 function ignoreMissingFile(error) {
   if (!error || error.code !== 'ENOENT') throw error;
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function waitFor(predicate, timeoutMilliseconds, intervalMilliseconds = 25) {
@@ -4338,28 +3006,6 @@ async function waitFor(predicate, timeoutMilliseconds, intervalMilliseconds = 25
     await delay(intervalMilliseconds);
   }
   return Boolean(predicate());
-}
-
-function renamePrompt(source) {
-  return [
-    'Create a compact working-context label for the conversation from the recent user messages below.',
-    'Use 1 or 2 short words. Prefer object + activity when that is more informative than one word.',
-    'Use familiar product or developer shorthand when natural, even inside a Portuguese conversation.',
-    'Use lowercase only. Good style examples: video ads, favicon gen, auth solving, mob nav.',
-    'Avoid generic project names, status words, and labels such as Session or Task.',
-    'Return only the title: no quotes, punctuation, explanation, or tool use.',
-    '',
-    source,
-  ].join('\n');
-}
-
-function providerLabel(provider) {
-  return {
-    codex: 'Codex',
-    claude: 'Claude',
-    vscode: 'VS Code model',
-    local: 'local generator',
-  }[provider] || provider;
 }
 
 function compactDiagnostic(value) {
@@ -4382,17 +3028,6 @@ function formatClaudeAuthDiagnostic(value) {
   }
 }
 
-function configuredExecutable(config, name) {
-  const executables = config.get('executables', {});
-  // Read the former individual path keys when they still exist in user
-  // settings so the smaller public configuration surface is non-breaking.
-  const legacy = config.get(`${name}Path`);
-  const configured = executables && typeof executables === 'object'
-    ? executables[name]
-    : undefined;
-  return resolveExecutable(legacy || configured || name, name);
-}
-
 async function commandStatus(file, args, options = {}) {
   try {
     const result = await execFileCapture(file, args, options);
@@ -4400,65 +3035,6 @@ async function commandStatus(file, args, options = {}) {
   } catch (error) {
     return { ok: false, error: messageOf(error) };
   }
-}
-
-function execFileCapture(file, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    childProcess.execFile(file, args, {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      ...options,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-        return;
-      }
-      resolve({
-        stdout: String(stdout || '').trim(),
-        stderr: String(stderr || '').trim(),
-      });
-    });
-  });
-}
-
-function execFileInputText(file, args, input, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = childProcess.execFile(file, args, {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      ...options,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-        return;
-      }
-      resolve(String(stdout || '').trimEnd());
-    });
-    child.stdin.on('error', () => {});
-    child.stdin.end(String(input || ''));
-  });
-}
-
-function execFileText(file, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    childProcess.execFile(file, args, {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      ...options,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
-        return;
-      }
-      resolve(String(stdout || '').trimEnd());
-    });
-  });
 }
 
 module.exports = { activate, deactivate };

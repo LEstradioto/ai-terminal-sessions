@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { COMMANDS, WorkbenchWindowAdapter } = require('../workbench-window');
+const { COMMANDS, WorkbenchWindowAdapter } = require('../runtime');
 
 function fakeVscode(commands) {
   const executed = [];

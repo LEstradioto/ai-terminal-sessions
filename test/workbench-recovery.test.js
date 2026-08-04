@@ -6,7 +6,7 @@ const {
   isSerializedTerminalStubLabel,
   normalizedTerminalLabel,
   staleManagedTerminalTabs,
-} = require('../workbench-recovery');
+} = require('../runtime');
 
 const STORAGE_ID = 'db259a869948f21b098259c1943b5733';
 

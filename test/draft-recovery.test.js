@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractDraft } = require('../draft-recovery');
+const { extractDraft } = require('../tmux-pty');
 
 test('extracts a multiline Codex composer and stops before its status line', () => {
   const buffer = [

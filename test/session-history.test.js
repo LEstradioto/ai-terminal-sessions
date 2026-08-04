@@ -7,7 +7,7 @@ const {
   historyPayload,
   normalizeSessionHistory,
   snapshotRecords,
-} = require('../session-history');
+} = require('../session-recovery');
 
 function record(id, tabOrder, title = id) {
   return {

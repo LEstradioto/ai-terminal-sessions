@@ -3,24 +3,54 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  SessionMonitor,
   activeProcess,
   activityLabel,
   ansiTerminalPreview,
   previewChangedAt,
   statusLabel,
   statusTone,
-  terminalPreview,
   turnDurationLabel,
 } = require('../monitor-model');
-const { monitorHtml } = require('../monitor-view');
 
-test('builds a bounded terminal tail and compacts full-width dividers', () => {
-  const divider = '─'.repeat(100);
-  const raw = ['old', divider, 'job one', '', 'job two', ''].join('\n');
-  const preview = terminalPreview(raw, 4);
-  assert.equal(preview, `${'─'.repeat(12)}…\njob one\n\njob two`);
-  assert.ok(preview.split('\n').length <= 4);
+test('monitor toggle closes a focused panel and restores the previous terminal', async () => {
+  const commands = [];
+  let restored = 0;
+  const terminal = { show: () => { restored += 1; } };
+  const vscode = {
+    commands: { executeCommand: async (command) => commands.push(command) },
+    window: { terminals: [terminal] },
+  };
+  const owner = monitorOwner();
+  const monitor = new SessionMonitor(owner, {
+    vscode,
+    workspaceName: () => 'workspace',
+    waitFor: async () => true,
+    titleFor: () => 'session',
+  });
+  monitor.view = { visible: true };
+  monitor.focused = true;
+  monitor.returnTerminal = terminal;
+
+  await monitor.toggle();
+
+  assert.deepEqual(commands, ['workbench.action.closePanel']);
+  assert.equal(restored, 1);
+  assert.equal(monitor.focused, false);
 });
+
+function monitorOwner() {
+  return {
+    activeRecord: () => undefined,
+    deactivating: false,
+    log: () => {},
+    output: { appendLine: () => {} },
+    pinnedRecords: () => [],
+    records: new Map(),
+    terminals: new Map(),
+  };
+}
+const { monitorHtml } = require('../monitor-view');
 
 test('preserves ANSI 256-color, truecolor, background and text attributes', () => {
   const raw = [

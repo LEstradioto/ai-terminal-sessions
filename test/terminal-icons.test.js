@@ -11,7 +11,7 @@ const {
   isRailsServerProcess,
   normalizeIconMode,
   normalizeIconPreset,
-} = require('../terminal-icons');
+} = require('../session-presentation');
 
 test('offers a small allowlisted set of colorful terminal roles', () => {
   assert.equal(DEFAULT_ICON_PRESET, 'terminal');

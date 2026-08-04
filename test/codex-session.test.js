@@ -8,7 +8,7 @@ const {
   codexSessionIdFromTranscriptPath,
   codexTranscriptPathsFromLsof,
   newestCodexSessionCandidate,
-} = require('../codex-session');
+} = require('../transcripts');
 
 const MAIN_ID = '019f6241-4f84-78a2-b027-c83ef34346fa';
 const CHILD_ID = '019f6241-59ed-7990-911f-bcfb3bf6daa8';

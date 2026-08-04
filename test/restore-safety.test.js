@@ -6,6 +6,8 @@ const path = require('node:path');
 const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+const ptySource = fs.readFileSync(path.join(__dirname, '..', 'tmux-pty.js'), 'utf8');
+const tmuxSource = fs.readFileSync(path.join(__dirname, '..', 'tmux.js'), 'utf8');
 
 test('restore targets the main window and recovers stranded auxiliary editors', () => {
   const start = source.indexOf('async restoreTabs(force)');
@@ -25,7 +27,7 @@ test('restore targets the main window and recovers stranded auxiliary editors', 
   assert.match(restoreTabs, /vscode\.window\.activeTerminal === lastTerminal/);
   assert.match(restoreTabs, /this\.closeDuplicateManagedTerminalTabs\(liveEditorTabs, records\)/);
   assert.match(restoreTabs, /preferredTerminal\.show\(false\)/);
-  assert.ok(restoreTabs.indexOf('await this.ensureSession(record)') < restoreTabs.indexOf('this.openRecord(record, true)'));
+  assert.ok(restoreTabs.indexOf('await this.tmux.ensureSession(record)') < restoreTabs.indexOf('this.openRecord(record, true)'));
 });
 
 test('Session Monitor uses a native panel view and removes legacy floating panels', () => {
@@ -45,7 +47,7 @@ test('Session Monitor uses a native panel view and removes legacy floating panel
   const provider = source.slice(providerStart, providerEnd);
   const serializer = source.slice(serializerStart, serializerEnd);
   const migration = source.slice(migrationStart, migrationEnd);
-  assert.match(provider, /this\.resolveMonitorView\(view\)/);
+  assert.match(provider, /this\.monitor\.resolve\(view\)/);
   assert.match(provider, /retainContextWhenHidden: true/);
   assert.match(serializer, /this\.disposeLegacyMonitor\(panel\)/);
   assert.match(migration, /panel\.dispose\(\)/);
@@ -65,36 +67,6 @@ test('manual restore leaves the native monitor panel out of editor recovery', ()
   assert.match(recovery, /this\.workbench\.switchToMainWindow\(\)/);
   assert.equal((restore.match(/this\.workbench\.switchToMainWindow\(\)/g) || []).length, 1);
   assert.doesNotMatch(restore, /monitorPanel|monitorFloating|floatMonitorPanel/);
-});
-
-test('monitor toggle opens and closes the native bottom panel', () => {
-  const toggleStart = source.indexOf('  async toggleMonitor()');
-  const toggleEnd = source.indexOf('\n  async openMonitor()', toggleStart);
-  const toggle = source.slice(toggleStart, toggleEnd);
-  assert.match(toggle, /this\.monitorView\?\.visible && this\.monitorFocused/);
-  assert.match(toggle, /return this\.hideMonitor\(\)/);
-  assert.match(toggle, /return this\.focusMonitor\(\)/);
-  assert.match(toggle, /view\.show\(false\)/);
-  assert.match(toggle, /type: 'focus-monitor'/);
-
-  const hideStart = source.indexOf('  async hideMonitor()');
-  const hideEnd = source.indexOf('\n  async openMonitor(', hideStart);
-  const hide = source.slice(hideStart, hideEnd);
-  assert.match(hide, /workbench\.action\.closePanel/);
-  assert.match(hide, /this\.showTerminalIfLive\(returnTerminal\)/);
-
-  const openStart = source.indexOf('  async openMonitorImpl(');
-  const openEnd = source.indexOf('\n  async resolveMonitorView(', openStart);
-  const open = source.slice(openStart, openEnd);
-  assert.match(open, /MONITOR_CONTAINER_COMMAND/);
-  assert.match(open, /this\.monitorView\.show\(Boolean\(preserveTerminalFocus\)\)/);
-
-  const focusStart = source.indexOf('  showTerminalIfLive(terminal)');
-  const focusEnd = source.indexOf('\n  startMonitorRefresh()', focusStart);
-  const focus = source.slice(focusStart, focusEnd);
-  assert.match(focus, /vscode\.window\.terminals\.includes\(terminal\)/);
-  assert.match(focus, /try \{/);
-  assert.match(focus, /this\.log\('monitor-return-focus', error\)/);
 });
 
 test('terminal replacement is safe when the close event arrives late', () => {
@@ -122,7 +94,7 @@ test('changing an icon replaces only the terminal bridge and replays its pane', 
   assert.notEqual(end, -1);
   const appearance = source.slice(start, end);
   assert.match(appearance, /this\.disposeManagedTerminal\(record, terminal, 'keep'\)/);
-  assert.match(appearance, /await this\.ensureSession\(record\)/);
+  assert.match(appearance, /await this\.tmux\.ensureSession\(record\)/);
   assert.match(appearance, /this\.openRecord\(record, true\)/);
   assert.match(appearance, /waitFor\(\(\) => pty\.bridgeReady\(\), 1800, 25\)/);
   assert.match(appearance, /await pty\.replayVisiblePane\(\)/);
@@ -131,7 +103,7 @@ test('changing an icon replaces only the terminal bridge and replays its pane', 
 test('automatic icon detection defers visual replacement until a safe recreation', () => {
   assert.doesNotMatch(source, /ensureAutomaticTerminalAppearance|appearanceRefreshes/);
   const start = source.indexOf('  async scanRecord(');
-  const end = source.indexOf('\n  async detectAgent(', start);
+  const end = source.indexOf('\n  updateAutomaticTitle(', start);
   assert.notEqual(start, -1);
   assert.notEqual(end, -1);
   const scan = source.slice(start, end);
@@ -171,29 +143,29 @@ test('manual restore recovers live tmux sessions from the latest saved snapshot'
 });
 
 test('private tmux sessions route wheel scrolling by pane harness', () => {
-  const start = source.indexOf('  async configureTmuxSession(');
-  const end = source.indexOf('\n  async configurePanePresentation(', start);
-  const configure = source.slice(start, end);
+  const start = tmuxSource.indexOf('  async configureTmuxSession(');
+  const end = tmuxSource.indexOf('\n  async configurePanePresentation(', start);
+  const configure = tmuxSource.slice(start, end);
   assert.match(configure, /'mouse', 'on'/);
   assert.match(configure, /'WheelUpPane',[\s\S]*?@ai-pane-wheel-mode[\s\S]*?'send-keys -M', 'copy-mode -e -t ='/);
   assert.doesNotMatch(configure, /'mouse', 'off'/);
 
-  const presentationStart = source.indexOf('  async configurePanePresentation(');
-  const presentationEnd = source.indexOf('\n  async resizeSession(', presentationStart);
-  const presentation = source.slice(presentationStart, presentationEnd);
+  const presentationStart = tmuxSource.indexOf('  async configurePanePresentation(');
+  const presentationEnd = tmuxSource.indexOf('\n  async resizeSession(', presentationStart);
+  const presentation = tmuxSource.slice(presentationStart, presentationEnd);
   assert.match(presentation, /'@ai-pane-agent'/);
   assert.match(presentation, /pane\.agent && pane\.agent\.active !== false && pane\.agent\.type === 'claude'/);
 
-  const ensureStart = source.indexOf('  async ensureSessionImpl(');
-  const ensureEnd = source.indexOf('\n  async tmuxHasSession(', ensureStart);
-  const ensure = source.slice(ensureStart, ensureEnd);
+  const ensureStart = tmuxSource.indexOf('  async ensureSessionImpl(');
+  const ensureEnd = tmuxSource.indexOf('\n  async tmuxHasSession(', ensureStart);
+  const ensure = tmuxSource.slice(ensureStart, ensureEnd);
   assert.match(ensure, /if \(alive\) await this\.configurePanePresentation\(record\)/);
 });
 
 test('tmux click and drag copies text and immediately returns to live output', () => {
-  const start = source.indexOf('  async configureTmuxSession(');
-  const end = source.indexOf('\n  async configurePanePresentation(', start);
-  const configure = source.slice(start, end);
+  const start = tmuxSource.indexOf('  async configureTmuxSession(');
+  const end = tmuxSource.indexOf('\n  async configurePanePresentation(', start);
+  const configure = tmuxSource.slice(start, end);
   assert.match(configure, /'copy-command', copyCommand/);
   assert.match(configure, /'MouseDrag1Pane', 'copy-mode', '-M', '-t', '='/);
   assert.match(configure, /'DoubleClick1Pane',[\s\S]*?'select-word',[\s\S]*?'copy-pipe-and-cancel'/);
@@ -204,10 +176,10 @@ test('tmux click and drag copies text and immediately returns to live output', (
 });
 
 test('new tmux panes receive a larger scrollback history before creation', () => {
-  assert.match(source, /const DEFAULT_TMUX_HISTORY_LIMIT = 20000;/);
-  const restoreStart = source.indexOf('  async restoreTmuxSession(');
-  const restoreEnd = source.indexOf('\n  restoreCommand(', restoreStart);
-  const restore = source.slice(restoreStart, restoreEnd);
+  assert.match(tmuxSource, /const DEFAULT_TMUX_HISTORY_LIMIT = 20000;/);
+  const restoreStart = tmuxSource.indexOf('  async restoreTmuxSession(');
+  const restoreEnd = tmuxSource.indexOf('\n  restoreCommand(', restoreStart);
+  const restore = tmuxSource.slice(restoreStart, restoreEnd);
   assert.ok(
     restore.indexOf("'set-option', '-g', 'history-limit'")
       < restore.indexOf("'new-session', '-d'"),
@@ -215,9 +187,9 @@ test('new tmux panes receive a larger scrollback history before creation', () =>
 });
 
 test('cold restore rebuilds every saved pane, layout, and focused pane', () => {
-  const start = source.indexOf('  async restoreTmuxSession(');
-  const end = source.indexOf('\n  restoredPaneRuntime(', start);
-  const restore = source.slice(start, end);
+  const start = tmuxSource.indexOf('  async restoreTmuxSession(');
+  const end = tmuxSource.indexOf('\n  restoredPaneRuntime(', start);
+  const restore = tmuxSource.slice(start, end);
   assert.match(restore, /const savedPanes = \[\.\.\.savedWindow\.panes\]/);
   assert.match(restore, /for \(const pane of savedPanes\.slice\(1\)\)/);
   assert.match(restore, /'split-window', '-d', '-P', '-F', '#\{pane_id\}'/);
@@ -228,9 +200,9 @@ test('cold restore rebuilds every saved pane, layout, and focused pane', () => {
 });
 
 test('configures each tmux session with one client invocation', () => {
-  const configureStart = source.indexOf('  async configureTmuxSession(');
-  const configureEnd = source.indexOf('\n  async configurePanePresentation(', configureStart);
-  const configure = source.slice(configureStart, configureEnd);
+  const configureStart = tmuxSource.indexOf('  async configureTmuxSession(');
+  const configureEnd = tmuxSource.indexOf('\n  async configurePanePresentation(', configureStart);
+  const configure = tmuxSource.slice(configureStart, configureEnd);
   assert.equal((configure.match(/await this\.runTmux\(/g) || []).length, 1);
   assert.match(configure, /'terminal-features\[100\]'/);
   assert.match(configure, /'automatic-rename', 'off'/);
@@ -282,7 +254,7 @@ test('explicit close archives the session before tmux termination', () => {
   const end = source.indexOf('\n  async attachExisting()', start);
   const close = source.slice(start, end);
   assert.ok(close.indexOf('await this.archiveSession(record, action)')
-    < close.indexOf('await this.killTmuxSession(record.tmuxSession)'));
+    < close.indexOf('await this.tmux.killTmuxSession(record.tmuxSession)'));
 });
 
 test('workspace relocation suspends restore state only after every tmux session stops', () => {
@@ -290,7 +262,7 @@ test('workspace relocation suspends restore state only after every tmux session 
   const prepareEnd = source.indexOf('\n  async importWorkspaceMove()', prepareStart);
   const prepare = source.slice(prepareStart, prepareEnd);
   assert.ok(prepare.indexOf('await this.writeRelocationBundle(bundle)')
-    < prepare.indexOf('await this.killTmuxSession(record.tmuxSession)'));
+    < prepare.indexOf('await this.tmux.killTmuxSession(record.tmuxSession)'));
   assert.ok(prepare.indexOf('if (failures.length)') < prepare.indexOf('this.records.clear()'));
   assert.doesNotMatch(prepare, /this\.drafts\.clear\(\)/);
   assert.doesNotMatch(prepare, /this\.sessionHistory = \[\]/);
@@ -300,15 +272,6 @@ test('workspace relocation suspends restore state only after every tmux session 
   const imported = source.slice(importStart, importEnd);
   assert.ok(imported.indexOf('await this.restoreTabs(true)')
     < imported.indexOf('fs.promises.unlink(picked.file)'));
-});
-
-test('restored terminals replay a pane snapshot after the live bridge attaches', () => {
-  const ptyStart = source.indexOf('class ManagedTmuxPty');
-  const ptyEnd = source.indexOf('\n\/\* tmux owns the processes', ptyStart);
-  const pty = source.slice(ptyStart, ptyEnd);
-  assert.match(pty, /await this\.primeDisplay\(\)/);
-  assert.match(pty, /'capture-pane', '-p', '-e'/);
-  assert.match(pty, /this\.writeEmitter\.fire\(`\\x1b\[2J\\x1b\[H/);
 });
 
 test('commands resolve a managed terminal from the active editor tab', () => {

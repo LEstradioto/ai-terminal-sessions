@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { WORKING_FRAMES, workingIndicator } = require('../working-animation');
+const { WORKING_FRAMES, workingIndicator } = require('../session-presentation');
 
 test('working animation uses a neutral outline circle and fixed-width spinner', () => {
   assert.equal(WORKING_FRAMES.length, 10);

@@ -5,9 +5,8 @@ const assert = require('node:assert/strict');
 const {
   interruptionReference,
   interruptionWasAcknowledged,
-  isNewReadyEvent,
   terminalStatusIcon,
-} = require('../session-status');
+} = require('../session-presentation');
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -81,13 +80,6 @@ test('legacy interrupted records use agent activity as their event timestamp', (
   assert.equal(interruptionReference(record), 100);
   assert.equal(interruptionWasAcknowledged(record), true);
   assert.notEqual(terminalStatusIcon(record, { now: 1000 }), '🔴');
-});
-
-test('detects a new completed turn even when polling only observes done to done', () => {
-  const record = { status: 'done', readyAt: 100, lastAgentActivityAt: 200 };
-  assert.equal(isNewReadyEvent(record, { status: 'done', lastActivityAt: 201 }), true);
-  assert.equal(isNewReadyEvent(record, { status: 'done', lastActivityAt: 200 }), false);
-  assert.equal(isNewReadyEvent(record, { status: 'running', lastActivityAt: 300 }), false);
 });
 
 test('a regular terminal command is newer than old agent activity', () => {

@@ -6,7 +6,7 @@ const {
   applyVisualOrder,
   recordIdsForTabLabels,
   sortRecordsForRestore,
-} = require('../session-order');
+} = require('../session-state');
 
 test('restores records in captured horizontal tab order', () => {
   const records = [

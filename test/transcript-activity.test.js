@@ -6,7 +6,7 @@ const {
   claudeTurnTiming,
   codexTurnTiming,
   latestTranscriptActivity,
-} = require('../transcript-activity');
+} = require('../transcripts');
 
 test('Claude activity ignores resume metadata that only touches the transcript file', () => {
   const entries = [

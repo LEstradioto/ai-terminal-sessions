@@ -4,8 +4,15 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const test = require('node:test');
 const {
-  redactDiagnostic, redactPath, resolveExecutable, shellQuote, terminalProfileSetting,
-} = require('../runtime-paths');
+  execFileText, redactDiagnostic, redactPath, resolveExecutable, shellQuote, terminalProfileSetting,
+} = require('../runtime');
+
+test('process output preserves indentation while trimming its final newline', async () => {
+  const output = await execFileText(process.execPath, [
+    '-e', 'process.stdout.write("  indented\\n")',
+  ]);
+  assert.equal(output, '  indented');
+});
 
 test('shellQuote safely preserves spaces and apostrophes', () => {
   assert.equal(shellQuote('/tmp/Agent CLI'), "'/tmp/Agent CLI'");

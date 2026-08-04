@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { extractConversationPreview } = require('../conversation-preview');
+const { extractConversationPreview } = require('../transcripts');
 
 test('extracts user and assistant messages from Codex without duplicate event formats', () => {
   const entries = [

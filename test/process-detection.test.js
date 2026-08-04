@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { commandExecutable, matchesExecutable } = require('../process-detection');
+const { commandExecutable, matchesExecutable } = require('../agents');
 
 test('detects an executable from argv when macOS truncates the comm column', () => {
   const processInfo = {

@@ -1,8 +1,16 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
-const { SessionStateStore, normalizeStatePayload, statePayload } = require('../session-state');
+const {
+  SessionStateStore,
+  WorkspaceRecoveryFiles,
+  normalizeStatePayload,
+  statePayload,
+} = require('../session-state');
 
 class MemoryState {
   constructor(delay = () => 0) {
@@ -109,4 +117,25 @@ test('state writes are serialized so the latest revision wins', async () => {
   await Promise.all([first, second]);
   assert.deepEqual(workspaceState.writes, [1, 2]);
   assert.equal(store.load().records[0].manualTitle, 'Latest');
+});
+
+test('recovery files serialize the newest payload and clear every recovery kind', async (context) => {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ai-session-state-'));
+  context.after(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const store = new WorkspaceRecoveryFiles(directory, 'workspace');
+
+  await Promise.all([
+    store.write('history', { revision: 1 }),
+    store.write('history', { revision: 2 }),
+  ]);
+  await store.write('drafts', { text: 'draft' });
+  await store.write('archive', { sessions: [] });
+  await store.flush();
+
+  assert.deepEqual(await store.read('history'), { revision: 2 });
+  await store.removeAll();
+  assert.equal(await store.read('history'), undefined);
+  assert.equal(await store.read('drafts'), undefined);
+  assert.equal(await store.read('archive'), undefined);
+  assert.throws(() => store.file('other'), /expected drafts, history, or archive/);
 });

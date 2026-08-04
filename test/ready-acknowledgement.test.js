@@ -4,21 +4,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { mergeObservedAgent } = require('../session-presentation');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'extension.js'), 'utf8');
+const ptySource = fs.readFileSync(path.join(__dirname, '..', 'tmux-pty.js'), 'utf8');
 
 test('an active terminal is not auto-acknowledged in the same scan that becomes ready', () => {
   const start = source.indexOf('async scanRecord(');
-  const end = source.indexOf('\n  async detectAgent(', start);
+  const end = source.indexOf('\n  updateAutomaticTitle(', start);
   const scanRecord = source.slice(start, end);
   assert.doesNotMatch(scanRecord, /terminal === vscode\.window\.activeTerminal/);
   assert.doesNotMatch(scanRecord, /acknowledgeReady\(record\)/);
 });
 
 test('only a submitted terminal message acknowledges pending attention', () => {
-  const start = source.indexOf('  handleInput(data) {');
-  const end = source.indexOf('\n  setDimensions(', start);
-  const handleInput = source.slice(start, end);
+  const start = ptySource.indexOf('  handleInput(data) {');
+  const end = ptySource.indexOf('\n  setDimensions(', start);
+  const handleInput = ptySource.slice(start, end);
   const submitted = handleInput.indexOf('if (input.submitted)');
   const acknowledge = handleInput.indexOf('acknowledgeSubmittedInput(this.record)');
   assert.ok(submitted >= 0);
@@ -41,11 +43,14 @@ test('focus changes acknowledge interruptions but not completed answers', () => 
 });
 
 test('a repeated interrupted transcript event becomes idle after acknowledgement', () => {
-  const paneModel = fs.readFileSync(path.join(__dirname, '..', 'pane-model.js'), 'utf8');
-  const start = paneModel.indexOf('function mergeObservedAgent(');
-  const end = paneModel.indexOf('\nfunction agentNeedsAttention(', start);
-  const merge = paneModel.slice(start, end);
-  assert.match(merge, /interruptionAcknowledged/);
-  assert.match(merge, /observed\.status === 'interrupted'/);
-  assert.match(merge, /\? 'idle'/);
+  const previous = {
+    type: 'codex',
+    sessionId: 'session-1',
+    status: 'interrupted',
+    lastActivityAt: 100,
+    interruptedAt: 100,
+    lastAcknowledgedInterruptedAt: 100,
+  };
+  const observed = { ...previous, lastAcknowledgedInterruptedAt: undefined };
+  assert.equal(mergeObservedAgent(previous, observed, 200).status, 'idle');
 });

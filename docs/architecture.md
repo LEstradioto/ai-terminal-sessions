@@ -14,7 +14,14 @@ VS Code remains the tab multiplexer. tmux supplies process persistence and optio
 
 ## Functional core and I/O shell
 
-Pure modules own draft parsing, transcript selection, status transitions, ordering, history compaction, ANSI preview rendering, input classification, and state normalization. `extension.js` coordinates VS Code events and adapters around those modules.
+Focused modules own draft parsing, transcript selection, status transitions, ordering, history compaction, ANSI preview rendering, input classification, and state normalization. `extension.js` coordinates VS Code events around six visible boundaries:
+
+- `runtime.js` wraps filesystem, process, workbench, and workspace lease behavior.
+- `tmux.js` and `tmux-pty.js` own persistent processes and the disposable terminal bridge.
+- `agents.js`, `transcripts.js`, and `rename-context.js` observe Codex and Claude Code without sending transcript data unless the user explicitly runs AI rename.
+- `session-state.js` and `session-recovery.js` own active state, drafts, archives, snapshots, and workspace moves.
+- `session-presentation.js` owns tab status, icons, pane roles, and activity rules.
+- `monitor-model.js` and `monitor-view.js` own the bottom panel monitor.
 
 Every pane receives a stable logical ID stored in a tmux pane option. Agent identity, reply acknowledgement, role, restore policy, draft, working directory, and focus are tracked per logical pane. The tab title projects the focused pane's state. Aggregate background attention and working counts stay in the VS Code status bar.
 

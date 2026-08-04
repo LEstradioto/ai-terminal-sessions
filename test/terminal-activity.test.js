@@ -7,7 +7,7 @@ const {
   hasAgentContext,
   hasMeaningfulTerminalOutput,
   repairLegacyRestoreActivity,
-} = require('../terminal-activity');
+} = require('../session-presentation');
 
 test('terminal activity ignores cursor movement, redraw controls and window titles', () => {
   assert.equal(hasMeaningfulTerminalOutput('\u001b[2J\u001b[H\r\n'), false);

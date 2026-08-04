@@ -8,7 +8,7 @@ const {
   mergeObservedAgent,
   paneKey,
   sessionPaneSummary,
-} = require('../pane-model');
+} = require('../session-presentation');
 
 test('selects the active pane inside the active window', () => {
   const record = { windows: [

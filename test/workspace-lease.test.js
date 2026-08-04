@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { WorkspaceLease } = require('../workspace-lease');
+const { WorkspaceLease } = require('../runtime');
 
 test('only one extension host can own a workspace lease', async (context) => {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ai-terminal-lease-'));

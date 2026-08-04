@@ -7,7 +7,7 @@ const {
   relocatePath,
   relocateWorkspaceBundle,
   relocationBundle,
-} = require('../workspace-relocation');
+} = require('../session-recovery');
 
 function sampleBundle() {
   return relocationBundle({

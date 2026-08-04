@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { historyPreviewHtml } = require('../history-preview');
+const { historyPreviewHtml } = require('../session-recovery');
 
 test('history preview has a strict CSP and escapes saved messages', () => {
   const html = historyPreviewHtml({

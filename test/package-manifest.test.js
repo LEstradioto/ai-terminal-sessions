@@ -1,8 +1,25 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const manifest = require('../package.json');
+
+test('keeps the production source small enough to audit directly', () => {
+  const root = path.join(__dirname, '..');
+  const files = fs.readdirSync(root).filter((file) => file.endsWith('.js'));
+  const lineCounts = new Map(files.map((file) => [
+    file,
+    fs.readFileSync(path.join(root, file), 'utf8').split('\n').length,
+  ]));
+  assert.ok(files.length <= 14, `expected at most 14 production modules, found ${files.length}`);
+  assert.ok([...lineCounts.values()].reduce((sum, lines) => sum + lines, 0) <= 7600);
+  assert.ok(lineCounts.get('extension.js') <= 3100);
+  for (const [file, lines] of lineCounts) {
+    if (file !== 'extension.js') assert.ok(lines <= 500, `${file} has ${lines} lines`);
+  }
+});
 
 test('activates eagerly so managed tabs can restore during workbench startup', () => {
   assert.deepEqual(manifest.activationEvents, ['*']);

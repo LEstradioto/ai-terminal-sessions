@@ -7,7 +7,7 @@ const {
   migrateSnapshotsToArchive,
   normalizeArchivePayload,
   upsertArchivedSession,
-} = require('../session-archive');
+} = require('../session-recovery');
 
 function record(id, sessionId = '') {
   return {

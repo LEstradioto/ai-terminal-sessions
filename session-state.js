@@ -1,7 +1,9 @@
 'use strict';
 
-const { normalizeIconMode, normalizeIconPreset } = require('./terminal-icons');
-const { normalizePaneRole, normalizeRestorePolicy } = require('./pane-model');
+const fs = require('node:fs');
+const path = require('node:path');
+const { normalizeIconMode, normalizeIconPreset } = require('./session-presentation');
+const { normalizePaneRole, normalizeRestorePolicy } = require('./session-presentation');
 
 const SESSION_STATE_VERSION = 1;
 const VALID_STATUS = new Set(['idle', 'running', 'waiting', 'done', 'interrupted', 'error']);
@@ -147,6 +149,52 @@ function normalizeStatePayload(payload, workspaceKey) {
   );
 }
 
+function numericOrder(record) {
+  return Number.isFinite(record && record.tabOrder) ? record.tabOrder : Number.MAX_SAFE_INTEGER;
+}
+
+function compareSessionOrder(left, right) {
+  return numericOrder(left) - numericOrder(right)
+    || (Number(left && left.createdAt) || 0) - (Number(right && right.createdAt) || 0)
+    || String(left && left.id || '').localeCompare(String(right && right.id || ''));
+}
+
+function sortRecordsForRestore(records) {
+  return [...records].sort(compareSessionOrder);
+}
+
+function recordIdsForTabLabels(tabLabels, terminals) {
+  const byName = new Map();
+  for (const terminal of terminals) {
+    if (!terminal || !terminal.id || !terminal.name) continue;
+    const bucket = byName.get(terminal.name) || [];
+    bucket.push(terminal);
+    byName.set(terminal.name, bucket);
+  }
+  for (const bucket of byName.values()) bucket.sort(compareSessionOrder);
+  return orderedRecordIds(tabLabels, byName);
+}
+
+function orderedRecordIds(tabLabels, recordsByName) {
+  const ids = [];
+  for (const label of tabLabels) {
+    const bucket = recordsByName.get(label);
+    if (bucket && bucket.length) ids.push(bucket.shift().id);
+  }
+  return ids;
+}
+
+function applyVisualOrder(records, orderedIds) {
+  let changed = false;
+  orderedIds.forEach((recordId, index) => {
+    const record = records.get(recordId);
+    if (!record || record.tabOrder === index) return;
+    record.tabOrder = index;
+    changed = true;
+  });
+  return changed;
+}
+
 class SessionStateStore {
   constructor(options) {
     this.workspaceState = options.workspaceState;
@@ -188,10 +236,72 @@ class SessionStateStore {
   }
 }
 
+class WorkspaceRecoveryFiles {
+  constructor(directory, workspaceHash) {
+    this.directory = directory;
+    this.paths = new Map([
+      ['drafts', path.join(directory, `drafts-${workspaceHash}.json`)],
+      ['history', path.join(directory, `history-${workspaceHash}.json`)],
+      ['archive', path.join(directory, `archive-${workspaceHash}.json`)],
+    ]);
+    this.queues = new Map();
+  }
+
+  async read(kind) {
+    const file = this.file(kind);
+    try {
+      return JSON.parse(await fs.promises.readFile(file, 'utf8'));
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }
+
+  write(kind, payload) {
+    const pending = this.queues.get(kind) || Promise.resolve();
+    const queued = pending.catch(() => {}).then(() => this.writeNow(kind, payload));
+    this.queues.set(kind, queued);
+    return queued;
+  }
+
+  async writeNow(kind, payload) {
+    const file = this.file(kind);
+    const temporary = `${file}.${process.pid}.tmp`;
+    await fs.promises.mkdir(this.directory, { recursive: true });
+    await fs.promises.writeFile(temporary, JSON.stringify(payload), {
+      encoding: 'utf8', mode: 0o600,
+    });
+    await fs.promises.rename(temporary, file);
+  }
+
+  async removeAll() {
+    await Promise.all([...this.paths.values()].map(async (file) => {
+      try { await fs.promises.unlink(file); } catch (error) {
+        if (!error || error.code !== 'ENOENT') throw error;
+      }
+    }));
+  }
+
+  flush() {
+    return Promise.all([...this.queues.values()].map((pending) => pending.catch(() => {})));
+  }
+
+  file(kind) {
+    const file = this.paths.get(kind);
+    if (!file) throw new Error(`Unknown recovery file "${kind}"; expected drafts, history, or archive`);
+    return file;
+  }
+}
+
 module.exports = {
   SESSION_STATE_VERSION,
   SessionStateStore,
+  WorkspaceRecoveryFiles,
+  applyVisualOrder,
+  compareSessionOrder,
   normalizeSessionRecord,
   normalizeStatePayload,
+  recordIdsForTabLabels,
+  sortRecordsForRestore,
   statePayload,
 };

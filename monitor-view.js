@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('node:crypto');
-
 function monitorHtml(webview, workspaceName) {
   const nonce = randomNonce();
   const workspace = escapeHtml(workspaceName || 'workspace');
@@ -69,10 +68,7 @@ function monitorHtml(webview, workspaceName) {
       font-size: 11px;
     }
 
-    .shell {
-      min-height: 100vh;
-      padding: 7px;
-    }
+    .shell { min-height: 100vh; padding: 7px; }
 
     .masthead {
       display: flex;
@@ -93,46 +89,18 @@ function monitorHtml(webview, workspaceName) {
       font-variant-numeric: tabular-nums;
     }
 
-    .identity, .counter {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      min-width: 0;
-    }
+    .identity, .counter { display: flex; align-items: center; gap: 5px; min-width: 0; }
 
-    .monitor-mark {
-      position: relative;
-      flex: 0 0 auto;
-      width: 8px;
-      height: 8px;
-      border: 1px solid var(--monitor-accent);
-      border-radius: 2px;
-      box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--monitor-accent) 10%, transparent);
-    }
+    .monitor-mark { position: relative; flex: 0 0 auto; width: 8px; height: 8px; border: 1px solid var(--monitor-accent); border-radius: 2px; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--monitor-accent) 10%, transparent); }
 
-    .monitor-mark::after {
-      position: absolute;
-      inset: 2px;
-      border-radius: 1px;
-      background: var(--monitor-accent);
-      content: "";
-    }
+    .monitor-mark::after { position: absolute; inset: 2px; border-radius: 1px; background: var(--monitor-accent); content: ""; }
 
     .monitor-label { color: var(--text); font-weight: 700; }
     .counter { color: color-mix(in srgb, var(--monitor-accent) 72%, var(--text)); }
 
-    .workspace {
-      overflow: hidden;
-      color: var(--text);
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+    .workspace { overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 6px;
-    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 6px; }
 
     .card {
       --tone: var(--idle);
@@ -147,31 +115,18 @@ function monitorHtml(webview, workspaceName) {
       transition: border-color 120ms ease, transform 120ms ease;
     }
 
-    .card::before {
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: 2px;
-      background: var(--tone);
-      content: "";
-    }
+    .card::before { position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--tone); content: ""; }
 
     .card[data-tone="working"] { --tone: var(--working); }
     .card[data-tone="waiting"] { --tone: var(--waiting); }
     .card[data-tone="ready"] { --tone: var(--ready); }
     .card[data-tone="error"] { --tone: var(--error); }
 
-    .card[data-fresh="true"] {
-      animation: signal 720ms ease-out;
-    }
+    .card[data-fresh="true"] { animation: signal 720ms ease-out; }
 
-    .card:focus-within, .card:hover {
-      border-color: color-mix(in srgb, var(--tone) 64%, var(--border));
-    }
+    .card:focus-within, .card:hover { border-color: color-mix(in srgb, var(--tone) 64%, var(--border)); }
 
-    .card:focus-visible {
-      outline: 1px solid var(--vscode-focusBorder);
-      outline-offset: -2px;
-    }
+    .card:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
 
     .card-header {
       display: grid;
@@ -185,16 +140,7 @@ function monitorHtml(webview, workspaceName) {
 
     .title-block { min-width: 0; }
 
-    .title {
-      overflow: hidden;
-      margin: 0 0 1px;
-      font-size: 10.5px;
-      font-weight: 650;
-      letter-spacing: .01em;
-      line-height: 1.15;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
+    .title { overflow: hidden; margin: 0 0 1px; font-size: 10.5px; font-weight: 650; letter-spacing: .01em; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 
     .meta {
       display: flex;
@@ -274,35 +220,11 @@ function monitorHtml(webview, workspaceName) {
     .ansi-fg-14 { color: var(--ansi-14); } .ansi-bg-14 { background-color: var(--ansi-14); }
     .ansi-fg-15 { color: var(--ansi-15); } .ansi-bg-15 { background-color: var(--ansi-15); }
 
-    .empty {
-      display: grid;
-      min-height: calc(100vh - 30px);
-      place-items: center;
-      border: 1px dashed var(--border);
-      border-radius: 5px;
-      color: var(--muted);
-      text-align: center;
-    }
+    .empty { display: grid; min-height: calc(100vh - 30px); place-items: center; border: 1px dashed var(--border); border-radius: 5px; color: var(--muted); text-align: center; }
 
-    .empty strong {
-      display: block;
-      margin-bottom: 4px;
-      color: var(--text);
-      font-size: 11px;
-      font-weight: 650;
-    }
+    .empty strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 11px; font-weight: 650; }
 
-    .key {
-      display: inline-block;
-      min-width: 18px;
-      margin: 0 1px;
-      padding: 1px 3px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: var(--panel);
-      color: var(--text);
-      font: 8px/1.2 var(--mono);
-    }
+    .key { display: inline-block; min-width: 18px; margin: 0 1px; padding: 1px 3px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--text); font: 8px/1.2 var(--mono); }
 
     @keyframes signal {
       0% { box-shadow: 0 0 0 1px var(--tone), 0 0 22px color-mix(in srgb, var(--tone) 30%, transparent); }

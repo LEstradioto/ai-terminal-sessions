@@ -6,7 +6,7 @@ const {
   sessionCounts,
   sessionNeedsAttention,
   sessionTabHealth,
-} = require('../session-counter');
+} = require('../session-presentation');
 
 function record(id, title, status = 'idle') {
   return { id, manualTitle: title, tmuxSession: `tmux-${id}`, status };

@@ -1,9 +1,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('node:os');
 const readline = require('readline');
+const {
+  execFileInputText,
+  messageOf,
+  stripStatusPrefix,
+} = require('./runtime');
 
-const STATUS_PREFIX_RE = /^(?:(?:○\s*[\u2800-\u28ff]?|[●◉✓⚠×⚪🟡🟠🟢🟧🟨🟫🔴])\s*)+/u;
 const SLASH_COMMAND_RE = /^\/[\p{L}\p{N}_-]+(?:\s|$)/u;
 const ACKNOWLEDGEMENT_PHRASES = [
   'ok', 'okay', 'yes', 'yep', 'yup', 'perfect', 'great', 'done', 'thanks', 'thank you',
@@ -130,10 +135,6 @@ function buildRenameSource(messages, fallback, maxChars = 1600) {
     .slice(0, maxChars);
 }
 
-function stripStatusPrefix(value) {
-  return normalizeWhitespace(String(value || '').replace(STATUS_PREFIX_RE, ''));
-}
-
 function normalizeContextTitle(input) {
   const tokens = normalizeWhitespace(String(input || '').replace(/["'`*_#.,:;!?()[\]{}<>]/g, ' '))
     .match(/[\p{L}\p{N}-]+/gu) || [];
@@ -141,12 +142,134 @@ function normalizeContextTitle(input) {
   return tokens.slice(0, 2).map((token) => token.toLocaleLowerCase()).join(' ');
 }
 
+function preferredRecordAgent(record) {
+  const agents = (record.windows || []).flatMap((window) => (window.panes || []))
+    .map((pane) => pane.agent)
+    .filter(Boolean);
+  const selected = record.activeAgent && agents.find((agent) => (
+    agent.type === record.activeAgent.type && agent.sessionId === record.activeAgent.sessionId
+  ));
+  return selected
+    || agents.find((agent) => agent.active && agent.transcript)
+    || agents.find((agent) => agent.transcript)
+    || agents.find((agent) => agent.active)
+    || agents[0];
+}
+
+async function renameContext(record, transcriptForAgent, log) {
+  const agent = preferredRecordAgent(record);
+  const transcript = await transcriptForAgent(record, agent);
+  const recent = await recentRenameMessages(agent, transcript, log);
+  const fallback = record.sourceTitle || record.autoTitle || record.manualTitle || record.tmuxSession;
+  return {
+    agent,
+    transcript,
+    ...recent,
+    localSource: recent.messages.length ? [...recent.messages].reverse().join(' ') : fallback,
+    source: buildRenameSource(recent.messages, fallback),
+  };
+}
+
+async function recentRenameMessages(agent, transcript, log) {
+  if (!agent || !transcript) return { messages: [], bytesRead: 0, error: undefined };
+  try {
+    const result = await readRecentUserMessages(agent.type, transcript, 2);
+    return { ...result, error: undefined };
+  } catch (error) {
+    log('rename-context', error);
+    return { messages: [], bytesRead: 0, error: messageOf(error) };
+  }
+}
+
+function renameProvider(configured, agent) {
+  if (configured === 'local' || configured === 'vscode') return configured;
+  if (agent && (agent.type === 'codex' || agent.type === 'claude')) return agent.type;
+  return 'vscode';
+}
+
+async function generateRenameTitle(provider, source, localSource, options) {
+  if (provider === 'local') {
+    return { title: normalizeContextTitle(localSource) || 'terminal', provider, model: 'deterministic' };
+  }
+  const request = renameRequest(provider, options);
+  const raw = request.languageModel
+    ? await languageModelTitle(options.vscode, renamePrompt(source))
+    : await execFileInputText(request.file, request.args, renamePrompt(source), request.options);
+  const title = normalizeContextTitle(raw.text || raw);
+  if (!title) throw new Error(`${providerLabel(provider)} returned an empty title`);
+  return { title, provider, model: raw.model || request.model };
+}
+
+function renameRequest(provider, options) {
+  if (provider === 'codex') return {
+    file: options.codexPath,
+    args: [
+      'exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      '--skip-git-repo-check', '--color', 'never', '-C', os.tmpdir(),
+      '-c', 'model_reasoning_effort="low"', '-',
+    ],
+    options: { timeout: 45000 },
+    model: 'CLI default',
+  };
+  if (provider === 'claude') return {
+    file: options.claudePath,
+    args: [
+      '-p', '--safe-mode', '--tools', '', '--permission-mode', 'dontAsk',
+      '--no-session-persistence', '--output-format', 'text',
+    ],
+    options: { timeout: 45000, cwd: os.tmpdir() },
+    model: 'CLI default',
+  };
+  if (provider === 'vscode') return { languageModel: true };
+  throw new Error(`Unsupported rename provider: ${provider}`);
+}
+
+async function languageModelTitle(vscode, prompt) {
+  const models = vscode.lm ? await vscode.lm.selectChatModels() : [];
+  if (!models.length) throw new Error('No VS Code language model is available');
+  const selected = models[0];
+  let text = '';
+  const response = await selected.sendRequest([vscode.LanguageModelChatMessage.User(prompt)]);
+  for await (const chunk of response.text) {
+    text += chunk;
+    if (text.length > 160) break;
+  }
+  return { text, model: selected.name || selected.id || selected.family || 'language-model' };
+}
+
+function renamePrompt(source) {
+  return [
+    'Create a compact working-context label for the conversation from the recent user messages below.',
+    'Use 1 or 2 short words. Prefer object + activity when that is more informative than one word.',
+    'Use familiar product or developer shorthand when natural, even inside a Portuguese conversation.',
+    'Use lowercase only. Good style examples: video ads, favicon gen, auth solving, mob nav.',
+    'Avoid generic project names, status words, and labels such as Session or Task.',
+    'Return only the title: no quotes, punctuation, explanation, or tool use.',
+    '',
+    source,
+  ].join('\n');
+}
+
+function providerLabel(provider) {
+  return {
+    codex: 'Codex',
+    claude: 'Claude',
+    vscode: 'VS Code model',
+    local: 'local generator',
+  }[provider] || provider;
+}
+
 module.exports = {
   buildRenameSource,
   extractRecentUserMessages,
+  generateRenameTitle,
   isAcknowledgementOnly,
   isMeaningfulRenameMessage,
   normalizeContextTitle,
+  preferredRecordAgent,
+  providerLabel,
   readRecentUserMessages,
+  renameContext,
+  renameProvider,
   stripStatusPrefix,
 };
